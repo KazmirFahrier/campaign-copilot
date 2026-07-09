@@ -2,6 +2,7 @@
 
 from campaign_copilot.tools.base import Tool, ToolResult, ToolSpec
 from campaign_copilot.tools.python_exec import PythonSandbox, SandboxConfig
+from campaign_copilot.tools.retrieve import SearchDocsTool
 from campaign_copilot.tools.sql import (
     ListMetricsTool,
     QueryMetricsTool,
@@ -15,6 +16,7 @@ __all__ = [
     "QueryMetricsTool",
     "RunSqlTool",
     "SandboxConfig",
+    "SearchDocsTool",
     "Tool",
     "ToolResult",
     "ToolSpec",

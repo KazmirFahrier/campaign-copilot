@@ -63,6 +63,7 @@ class ToolResult:
     content: str
     data: dict[str, Any] = field(default_factory=dict)
     error_code: str | None = None
+    grounds_numbers: bool = True
 
     @classmethod
     def failure(cls, code: str, message: str) -> ToolResult:
@@ -74,6 +75,17 @@ class ToolResult:
         """Build a success carrying a structured payload."""
         return cls(ok=True, content=content, data=data)
 
+    @classmethod
+    def reference(cls, content: str, **data: Any) -> ToolResult:
+        """Build a success that licenses no numbers.
+
+        Retrieval returns *documents*. A memo that says "ROAS was 4.2x last quarter" does
+        not entitle the agent to state 4.2 as a current fact -- only a query that computed
+        it does. Grounding a claim in retrieved prose is how a RAG system launders a stale
+        number into a fresh answer.
+        """
+        return cls(ok=True, content=content, data=data, grounds_numbers=False)
+
     def as_message_content(self) -> str:
         """What gets appended to the conversation as the tool's turn."""
         return self.content
@@ -83,7 +95,10 @@ class ToolResult:
 
         Walks ``data`` recursively so a nested result set still grounds its own values.
         Booleans are excluded: ``True`` is not the number 1 in any answer worth checking.
+        Results built with :meth:`reference` license nothing.
         """
+        if not self.grounds_numbers:
+            return []
         found: list[float] = []
 
         def walk(node: Any) -> None:

@@ -8,11 +8,11 @@ layer, executing it in a sandbox, and refusing to state a number it cannot trace
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-> **Status: Phases 0-2 complete.** Warehouse, semantic layer, SQL guardrail, LLM core,
-> tools, grounding checker, and the agent loop are built and tested (125 tests, 91%
-> branch coverage, `mypy --strict`, `docs/threat-model.md`). RAG, the evaluation harness,
-> and deployment are not. This README describes what exists; the roadmap at the bottom
-> describes what does not. Nothing here claims to be finished.
+> **Status: Phases 0-3 complete.** Warehouse, semantic layer, SQL guardrail, LLM core,
+> tools, grounding checker, agent loop, and hybrid RAG with injection controls are built
+> and tested (149 tests, 92% branch coverage, `mypy --strict`, `docs/threat-model.md`).
+> The evaluation harness and deployment are not. This README describes what exists; the
+> roadmap at the bottom describes what does not. Nothing here claims to be finished.
 
 ---
 
@@ -210,6 +210,39 @@ without gate        : SHIPPED -> "Branded search ROAS was 14.30."
 true value          : 9.7008
 ```
 
+## Retrieval
+
+BM25 and dense, fused by reciprocal rank. Both, because lexical search finds
+`paid_search_nonbrand` when you type the identifier and dense search finds it when you type
+"non-branded paid search". Choosing one is choosing which half of your questions to answer
+badly. RRF fuses on *rank*, not score, because BM25 scores and cosine similarities are not on
+a comparable scale and normalizing them is a hyperparameter nobody tunes correctly.
+
+Chunked by semantic unit — one metric, one dimension, one table per chunk — so a metric's
+formula never gets separated from its ambiguity note. `HashingEmbedder` is offline and
+deterministic, and the docstring says plainly that it is **lexical, not semantic**: it keeps
+the fusion and citation plumbing testable in CI while `OpenAIEmbedder` runs in production.
+Calling it an embedding model would be the same category of lie as calling `python_exec` a
+sandbox.
+
+### Injection, and the laundering path
+
+Retrieval is where text the agent did not write enters the context. Untrusted chunks are
+fenced in `<untrusted_document id="...">`, scanned, flagged, and *still shown* — deleting the
+attack hides it from the trace. The scanner has false negatives and the module docstring says
+so; nothing gates on its verdict.
+
+The control that does the real work is different, and it is one line in the type:
+
+```python
+ToolResult.reference(...)   # numeric_facts() == []  by construction
+```
+
+`search_docs` returns documents. A memo asserting "blended ROAS was 4.2x" cannot license the
+agent to state 4.2. That closes the RAG laundering path, where a stale or attacker-supplied
+number in prose is re-emitted as a fresh, confident answer. There is an end-to-end test where
+the agent retrieves exactly that memo, tries to answer `4.2x` twice, and is refused both times.
+
 ## Roadmap
 
 | Phase | Scope | Status |
@@ -217,7 +250,7 @@ true value          : 9.7008
 | 0 | dbt warehouse, semantic layer, CI, packaging | ✅ done |
 | 1 | LLM core: provider adapters, structured outputs, token budget, multi-turn memory | ✅ done |
 | 2 | Agent loop + tool servers (SQL, sandboxed Python) | ✅ done |
-| 3 | Hybrid RAG over schema and metric docs, grounded citations | ⬜ |
+| 3 | Hybrid RAG over schema and metric docs, grounded citations | ✅ done |
 | 4 | **Evaluation harness** — golden SQL, multi-turn regression, κ-validated LLM judge | ⬜ |
 | 5 | Document automation (Docs/Slides API weekly report) | ⬜ |
 | 6 | Cloud Run deploy, Terraform, TypeScript streaming UI | ⬜ |

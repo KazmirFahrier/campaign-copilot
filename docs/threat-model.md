@@ -104,20 +104,44 @@ an agent could state "we ran 7 campaigns" without checking. Closing it requires
 distinguishing counts from ordinals, which needs the tool result's schema, not just its
 values. Tracked, not solved.
 
-### Prompt injection
+### Prompt injection: `rag/safety.py`
 
-Not yet controlled, and it should not be claimed otherwise. Phase 3 introduces a RAG
-corpus, which is the moment untrusted text enters the context. Planned controls:
+The RAG corpus is where text the agent did not write enters the context. A campaign name is
+a string an advertiser typed into a form. A memo is a file somebody uploaded.
 
-- Retrieved content is wrapped in a delimiter and the system prompt states that content
-  inside it is data, never instruction.
-- The agent's plan is a structured object (`Plan`), not free text, so an injected
-  instruction has to survive schema validation to become an action.
-- Every tool call the plan produces still passes the guardrail. Injection buys the
-  attacker a *request*, not an execution.
-- The adversarial eval suite (`evals/adversarial.jsonl`, 25 cases) scores block rate
-  with a target of 1.00, and it runs in CI.
+Four layers, in descending order of how much each actually contributes:
 
-The honest summary: layers 1 and 3 are built and tested. Layer 2's containment is a
-container that does not exist yet, and prompt injection is a Phase 3–4 problem that is
-currently unmitigated.
+1. **Wrapping.** Untrusted chunks are fenced in `<untrusted_document id="...">` and the
+   block is prefaced with a notice that its contents are data, never instruction. The id is
+   carried in both the open and close tags, so a model echoing the delimiter cannot forge a
+   new block. This is the control that does most of the work and never fails open.
+2. **The `Step` schema.** A persuaded model still has to serialize its intent into a
+   validated object whose `action` and payload must agree. Free-text compliance is not an
+   available move.
+3. **The tool registry.** `_dispatch` looks the name up. `shell` is not there, so it returns
+   `UNKNOWN_TOOL` and nothing runs. Tested: `test_an_injected_memo_cannot_reach_an_unregistered_tool`.
+4. **The SQL guardrail**, unchanged, for anything that does reach `run_sql`.
+
+Then a fifth, orthogonal one: **retrieval grounds nothing.** `SearchDocsTool` returns a
+`ToolResult.reference`, whose `numeric_facts()` is empty by construction. A memo asserting
+"blended ROAS was 4.2x" cannot license the agent to state 4.2. This closes the RAG
+laundering path, where a stale or attacker-supplied number in prose is re-emitted as a
+fresh, confident answer. Tested end to end:
+`test_a_number_that_exists_only_in_a_memo_cannot_be_stated`.
+
+**What the scanner is not.** `scan_for_injection` matches six known shapes. It will have
+false negatives, and anyone claiming a regex catches prompt injection is selling something.
+It exists to *flag*, so the chunk is visible in `AgentTrace` and countable by the eval
+harness. It never removes a chunk: deleting the attack hides it from the trace. Nothing in
+this system gates on the scanner's verdict.
+
+**Known gap.** Warehouse *values* are not yet treated as untrusted. A campaign literally
+named `ignore prior instructions` arrives inside a `TOOL RESULT` block from `query_metrics`,
+which is not wrapped, because query results are trusted by provenance. The fix is to wrap
+string cells from any column whose values are user-supplied. Not done. Named here rather
+than left for someone to find.
+
+The honest summary: layers 1, 3, 4 and 5 are built and tested. Layer 2's containment is a
+container that does not exist yet. Injection is now controlled at four points rather than
+zero, and the residual risk is a persuaded model choosing badly among tools it is *allowed*
+to call -- which is what the adversarial eval suite in Phase 4 is for.
