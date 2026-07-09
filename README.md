@@ -8,11 +8,11 @@ layer, executing it in a sandbox, and refusing to state a number it cannot trace
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-> **Status: Phases 0-1 complete.** The warehouse, semantic layer, SQL guardrail, and LLM
-> core are built and tested (85 tests, 87% branch coverage, `mypy --strict`). The agent
-> loop, RAG, evaluation harness, and deployment are not. This README describes what
-> exists; the roadmap at the bottom describes what does not. Nothing here claims to be
-> finished.
+> **Status: Phases 0-2 complete except the orchestration loop.** Warehouse, semantic
+> layer, SQL guardrail, LLM core, the three tools, and the grounding checker are built
+> and tested (107 tests, `mypy --strict`, `docs/threat-model.md`). The agent loop, RAG,
+> evaluation harness, and deployment are not. This README describes what exists; the
+> roadmap at the bottom describes what does not. Nothing here claims to be finished.
 
 ---
 
@@ -151,13 +151,46 @@ Three pieces do the real work:
 Prompts are files with content hashes (`prompts.py`), not f-strings. Every eval run records
 the fingerprint, so a metric regression can be bisected to a prompt change.
 
+## Grounding
+
+Every number in the final answer must be traceable to a tool result, or the answer is
+regenerated. This is a *blocker*, not a detector — detection tells you afterwards that you
+sent a wrong number to a client.
+
+```python
+>>> checker.check("ROAS was 9.70 and spend was $412,000.", facts=[9.7013])
+GroundingReport(ok=False, ungrounded=(Claim(raw='$412,000', ...),), checked=2)
+```
+
+`9.70` passes: a fact rounds to it at the claim's own precision. `$412,000` does not appear
+in any query result, so the answer does not ship. Three relaxations keep a correct agent from
+being blocked — rounding, percent/fraction rescaling, and numbers the user supplied — and each
+is a rule, not a fudge factor. Rescaling `3.8%` to `0.038` also buys two decimal places of
+precision; without that, a claim of `3.8%` would be "grounded" by a fact of `0.052`.
+
+## Tools
+
+`list_metrics` → `query_metrics` → `run_sql`, in that preference order. The safe path compiles
+through the semantic layer and cannot produce wrong arithmetic because it never writes
+arithmetic. `run_sql` is the escape hatch for window functions and self-joins, and it passes
+through the guardrail.
+
+`python_exec` runs agent-authored Python in a subprocess with rlimits, a wall-clock timeout,
+and a namespace that persists across turns. **It is a resource limiter, not a security
+boundary**, and [`docs/threat-model.md`](docs/threat-model.md) says so in the terms an
+interviewer will ask about. The real boundary is the container in Phase 6.
+
+Tool failures are *returned*, not raised: `ToolResult.failure(code, message)` carries the same
+machine-readable codes the guardrail emits, so the agent's one recovery attempt is a repair
+rather than a re-roll.
+
 ## Roadmap
 
 | Phase | Scope | Status |
 |---|---|---|
 | 0 | dbt warehouse, semantic layer, CI, packaging | ✅ done |
 | 1 | LLM core: provider adapters, structured outputs, token budget, multi-turn memory | ✅ done |
-| 2 | Agent + MCP tool servers (SQL, sandboxed Python, ads API) | 🟨 guardrail done |
+| 2 | Agent + tool servers (SQL, sandboxed Python) | 🟨 tools + grounding done; loop next |
 | 3 | Hybrid RAG over schema and metric docs, grounded citations | ⬜ |
 | 4 | **Evaluation harness** — golden SQL, multi-turn regression, κ-validated LLM judge | ⬜ |
 | 5 | Document automation (Docs/Slides API weekly report) | ⬜ |

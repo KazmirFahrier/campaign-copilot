@@ -121,14 +121,19 @@ dimensions:
     type: string
     description: >
       Campaign identifier. The literal '(direct)' denotes unattributed traffic and is
-      NOT a real campaign. Exclude it from campaign rankings unless asked otherwise.
+      NOT a real campaign.
+    ambiguity: >
+      Filtering campaigns without excluding '(direct)' silently mixes unattributed
+      revenue into a campaign ranking. State whether it is in or out.
   - name: channel
     type: string
     description: >
       Media channel. 'paid_search_brand' is branded search and converts ~5x better than
-      'paid_search_nonbrand'. Analysts routinely exclude it when judging incrementality,
-      because branded clicks largely cannibalise organic demand. If a user asks for
-      paid search performance without saying whether to include brand, ask.
+      'paid_search_nonbrand'.
+    ambiguity: >
+      Branded clicks largely cannibalise organic demand, so analysts routinely exclude
+      them when judging incrementality. A filter on channel that does not say whether
+      brand is in or out is ambiguous. Grouping BY channel is not: the split is visible.
   - name: device_category
     type: string
     description: One of desktop, mobile, tablet.

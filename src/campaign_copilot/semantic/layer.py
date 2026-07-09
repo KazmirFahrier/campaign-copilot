@@ -104,6 +104,7 @@ class Dimension:
     name: str
     type: str
     description: str
+    ambiguity: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,7 +148,10 @@ class SemanticLayer:
         }
         dimensions = {
             d["name"]: Dimension(
-                name=d["name"], type=d["type"], description=str(d["description"]).strip()
+                name=d["name"],
+                type=d["type"],
+                description=str(d["description"]).strip(),
+                ambiguity=(d.get("ambiguity") or None) and str(d["ambiguity"]).strip(),
             )
             for d in raw.get("dimensions", [])
         }
@@ -195,24 +199,28 @@ class SemanticLayer:
 
     # ---------------------------------------------------------------- ambiguity
 
-    def ambiguity_notes(
-        self, metrics: Sequence[str], dimensions: Sequence[str] = ()
-    ) -> list[str]:
+    def ambiguity_notes(self, metrics: Sequence[str], filters: Sequence[str] = ()) -> list[str]:
         """Notes the agent must consider before answering.
 
         A non-empty result does not mean "refuse". It means "either disambiguate in the
         question, or state the assumption in the answer". The eval harness scores which
         of those two the agent chose.
+
+        Dimension notes fire on *filters*, not on group-bys. Filtering a dimension hides
+        a distinction; grouping by it displays one. "CTR by channel" needs no warning
+        because brand and non-brand appear as separate rows. "CTR where channel like
+        'paid_search%'" silently blends them, and does.
         """
         notes: list[str] = []
         for name in metrics:
             m = self.metric(name)
             if m.ambiguity:
                 notes.append(f"[metric:{m.name}] {m.ambiguity}")
-        for name in dimensions:
-            d = self.dimension(name)
-            if "ask" in d.description.lower() or "exclude" in d.description.lower():
-                notes.append(f"[dimension:{d.name}] {d.description}")
+
+        filter_text = " ".join(filters).lower()
+        for dim in self.dimensions.values():
+            if dim.ambiguity and dim.name in filter_text:
+                notes.append(f"[dimension:{dim.name}] {dim.ambiguity}")
         return notes
 
     # ---------------------------------------------------------------- compile

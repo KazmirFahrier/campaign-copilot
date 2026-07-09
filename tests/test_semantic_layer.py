@@ -69,6 +69,16 @@ def test_unambiguous_metric_surfaces_nothing(layer: SemanticLayer) -> None:
     assert layer.ambiguity_notes(["ctr"]) == []
 
 
+def test_filtering_an_ambiguous_dimension_surfaces_a_note(layer: SemanticLayer) -> None:
+    notes = layer.ambiguity_notes(["ctr"], filters=["channel like 'paid_search%'"])
+    assert any("dimension:channel" in n for n in notes)
+
+
+def test_grouping_by_that_dimension_does_not(layer: SemanticLayer) -> None:
+    """Grouping displays the brand/non-brand split; filtering hides it."""
+    assert layer.ambiguity_notes(["ctr"]) == []
+
+
 # -------------------------------------------------------------------- compile
 
 

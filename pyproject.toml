@@ -36,6 +36,10 @@ addopts = "-q --strict-markers"
 [tool.coverage.run]
 source = ["src/campaign_copilot"]
 branch = true
+# _runner.py executes in a subprocess the tracer cannot see. It is exercised by every
+# test in test_tools.py's sandbox section; measuring it would require coverage's
+# subprocess hooks, which fight with the rlimits we set in preexec_fn.
+omit = ["*/tools/_runner.py"]
 
 [tool.ruff]
 line-length = 96
