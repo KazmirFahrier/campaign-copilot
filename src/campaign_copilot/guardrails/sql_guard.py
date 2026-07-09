@@ -25,13 +25,15 @@ The guard returns rewritten SQL. Callers execute *that*, never the original stri
 
 from __future__ import annotations
 
-from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Final
+from typing import TYPE_CHECKING, Final, cast
 
 import sqlglot
 from sqlglot import exp
 from sqlglot.errors import ParseError
+
+if TYPE_CHECKING:
+    from campaign_copilot.semantic.layer import SemanticLayer
 
 __all__ = [
     "GuardResult",
@@ -169,7 +171,7 @@ class SqlGuard:
                 f"Expected exactly one statement, found {len(statements)}. "
                 "Statement batching is how a SELECT smuggles a DROP.",
             )
-        return statements[0]
+        return cast(exp.Expression, statements[0])
 
     @staticmethod
     def _assert_select(tree: exp.Expression) -> None:
@@ -229,11 +231,11 @@ class SqlGuard:
                     ViolationCode.FUNCTION_NOT_ALLOWED,
                     f"Function {name!r} can reach the filesystem or the network.",
                 )
-        for node in tree.find_all(exp.Func):
-            name = getattr(node, "sql_name", lambda: "")().lower()
-            if name in FORBIDDEN_FUNCTIONS:
+        for func in tree.find_all(exp.Func):
+            func_name = getattr(func, "sql_name", lambda: "")().lower()
+            if func_name in FORBIDDEN_FUNCTIONS:
                 raise GuardrailViolation(
-                    ViolationCode.FUNCTION_NOT_ALLOWED, f"Function {name!r} is forbidden."
+                    ViolationCode.FUNCTION_NOT_ALLOWED, f"Function {func_name!r} is forbidden."
                 )
 
     @staticmethod
@@ -267,24 +269,34 @@ class SqlGuard:
                 "average of a per-row ratio is not the ratio of the sums, and is wrong.",
             )
 
+    @staticmethod
+    def _apply_limit(tree: exp.Expression, n: int) -> exp.Expression:
+        """Attach a LIMIT. Set operations must be wrapped in a subquery first."""
+        if isinstance(tree, exp.Select):
+            return cast(exp.Expression, tree.limit(n))
+        wrapped = cast(exp.Query, tree).subquery("_limited")
+        limited: exp.Expression = exp.select("*").from_(wrapped).limit(n)
+        return limited
+
     def _enforce_limit(self, tree: exp.Expression, warnings: list[str]) -> exp.Expression:
         limit = tree.args.get("limit")
         if limit is None:
-            return tree.limit(self.config.default_limit)
+            return self._apply_limit(tree, self.config.default_limit)
         try:
             value = int(limit.expression.name)
         except (AttributeError, ValueError):
             warnings.append("Non-literal LIMIT; clamping to max_limit.")
-            return tree.limit(self.config.max_limit)
+            return self._apply_limit(tree, self.config.max_limit)
         if value > self.config.max_limit:
             warnings.append(
                 f"LIMIT {value} exceeds max_limit {self.config.max_limit}; clamped."
             )
-            return tree.limit(self.config.max_limit)
+            return self._apply_limit(tree, self.config.max_limit)
         return tree
 
 
-def guard_from_semantic_layer(layer: object, **overrides: Iterable[str]) -> SqlGuard:
+def guard_from_semantic_layer(layer: SemanticLayer, **overrides: object) -> SqlGuard:
     """Build a guard whose aggregate allowlist is derived from the semantic layer."""
-    atoms = layer.aggregate_atoms()  # type: ignore[attr-defined]
-    return SqlGuard(SqlGuardConfig(allowed_aggregates=atoms, **overrides))  # type: ignore[arg-type]
+    return SqlGuard(
+        SqlGuardConfig(allowed_aggregates=layer.aggregate_atoms(), **overrides)  # type: ignore[arg-type]
+    )

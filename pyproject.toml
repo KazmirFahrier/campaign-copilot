@@ -61,3 +61,14 @@ warn_unreachable = true
 [[tool.mypy.overrides]]
 module = ["duckdb.*", "yaml.*", "sqlglot.*", "pandas.*", "numpy.*"]
 ignore_missing_imports = true
+
+# The generator is a vectorized numpy/pandas script. numpy's Generator methods are
+# untyped upstream, so `disallow_untyped_calls` fires on every `rng.poisson(...)`.
+# Silencing it there is honest; silencing it repo-wide would not be. Everything the
+# agent actually executes -- semantic layer, guardrails, llm -- stays --strict.
+[[tool.mypy.overrides]]
+module = ["campaign_copilot.warehouse.generate"]
+disallow_untyped_calls = false
+disallow_any_generics = false
+warn_return_any = false
+disable_error_code = ["call-overload"]

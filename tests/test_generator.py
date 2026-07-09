@@ -86,7 +86,7 @@ def test_direct_traffic_exists_and_has_no_campaign(frames: dict[str, pd.DataFram
 
 
 def test_branded_search_outconverts_nonbrand(frames: dict[str, pd.DataFrame]) -> None:
-    """"Exclude branded search" is only a meaningful instruction if brand really differs."""
+    """ "Exclude branded search" is only a meaningful instruction if brand really differs."""
     s = frames["raw_sessions"]
     rates = s.groupby("channel")["is_converted"].mean()
     assert rates["paid_search_brand"] > 2 * rates["paid_search_nonbrand"]
