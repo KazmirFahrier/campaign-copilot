@@ -1,0 +1,19 @@
+name: campaign_copilot
+version: "0.1.0"
+config-version: 2
+profile: campaign_copilot
+
+model-paths: ["models"]
+macro-paths: ["macros"]
+test-paths: ["tests"]
+target-path: "target"
+clean-targets: ["target", "dbt_packages"]
+
+models:
+  campaign_copilot:
+    staging:
+      +materialized: view
+      +schema: staging
+    marts:
+      +materialized: table
+      +schema: marts

@@ -1,0 +1,48 @@
+version: 2
+
+models:
+  - name: campaign_performance_daily
+    description: "Grain: (event_date, campaign_name). Canonical fact table for media efficiency."
+    columns:
+      - name: event_date
+        tests: [not_null]
+      - name: campaign_name
+        tests: [not_null]
+      - name: spend_usd
+        tests:
+          - not_null
+          - dbt_utils.accepted_range: {min_value: 0, inclusive: true}
+      - name: revenue_usd
+        tests: [not_null]
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [event_date, campaign_name]
+
+  - name: channel_attribution
+    description: "Grain: (event_date, channel). Rollup of campaign_performance_daily."
+    columns:
+      - name: event_date
+        tests: [not_null]
+      - name: channel
+        tests:
+          - not_null
+          - accepted_values:
+              values: [paid_search_brand, paid_search_nonbrand, paid_social,
+                       display, video, affiliate, direct]
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [event_date, channel]
+
+  - name: customer_ltv
+    description: "Grain: customer_id. First-touch acquisition attribution."
+    columns:
+      - name: customer_id
+        tests: [not_null, unique]
+      - name: orders
+        tests:
+          - not_null
+          - dbt_utils.accepted_range: {min_value: 1, inclusive: true}
+      - name: lifetime_revenue_usd
+        tests: [not_null]
+      - name: acquisition_channel
+        tests: [not_null]

@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push: { branches: [main] }
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: pip install -e ".[dev,warehouse]"
+
+      - name: Lint
+        run: ruff check src tests
+
+      - name: Format check
+        run: ruff format --check src tests
+
+      - name: Types
+        run: mypy
+
+      # The warehouse is generated, never committed. If this step fails, the repo is
+      # not reproducible and nothing downstream can be trusted.
+      - name: Build warehouse
+        run: make warehouse
+
+      - name: Test
+        run: pytest --cov --cov-report=term-missing --cov-fail-under=85
+
+      - name: dbt data tests
+        run: cd warehouse && dbt test --profiles-dir .

@@ -1,0 +1,33 @@
+version: 2
+
+sources:
+  - name: raw
+    description: Raw event tables as landed from ad platforms and the web analytics SDK.
+    schema: raw
+    tables:
+      - name: raw_ad_performance
+        description: Daily impressions, clicks and spend per campaign, from the ad platform APIs.
+        columns:
+          - name: event_date
+            tests: [not_null]
+          - name: campaign_name
+            tests: [not_null]
+          - name: spend_usd
+            tests: [not_null]
+      - name: raw_sessions
+        description: One row per web session. campaign_name is NULL for direct traffic.
+        columns:
+          - name: session_id
+            tests: [not_null, unique]
+      - name: raw_transactions
+        description: One row per completed order.
+        columns:
+          - name: transaction_id
+            tests: [not_null, unique]
+          - name: session_id
+            tests: [not_null]
+      - name: raw_campaigns
+        description: Campaign dimension, including flight dates and brand classification.
+        columns:
+          - name: campaign_name
+            tests: [not_null, unique]

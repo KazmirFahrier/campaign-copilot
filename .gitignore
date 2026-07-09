@@ -1,0 +1,26 @@
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# dbt
+warehouse/target/
+warehouse/logs/
+warehouse/dbt_packages/
+warehouse/.user.yml
+
+# The warehouse is a build artifact: `make warehouse` reproduces it byte-for-byte
+# from SEED. Committing 33 MB of DuckDB would be a lie about reproducibility.
+warehouse/*.duckdb
+warehouse/*.duckdb.wal
+
+.env
+.env.*
+!.env.example

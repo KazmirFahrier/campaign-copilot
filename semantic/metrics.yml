@@ -1,0 +1,145 @@
+version: 2
+
+# ============================================================================
+# SEMANTIC LAYER
+#
+# Every metric the agent is allowed to compute is defined exactly once, here.
+# The agent resolves a metric name to `expression` and is FORBIDDEN from
+# inventing arithmetic. This is enforced in Phase 2 by the SQL guardrail:
+# any aggregate over a fact column that is not a registered metric is rejected.
+#
+# `ambiguity` is not documentation garnish. It is the retrieval payload that
+# lets the agent decide whether to answer or to ask a clarifying question,
+# which is scored directly by `clarification_precision` in the eval harness.
+# ============================================================================
+
+metrics:
+  - name: spend
+    label: Ad Spend
+    description: Gross media cost billed by the ad platform, in USD.
+    expression: sum(spend_usd)
+    grain: [event_date, campaign_name, channel]
+    unit: usd
+    ambiguity: null
+
+  - name: revenue
+    label: Revenue
+    description: Gross transaction revenue, excluding tax, shipping and returns.
+    expression: sum(revenue_usd)
+    grain: [event_date, campaign_name, channel]
+    unit: usd
+    ambiguity: >
+      Gross, not net. Returns are not modelled in this warehouse, so every revenue
+      figure is an upper bound. Do not describe it as "net revenue" or "profit".
+
+  - name: roas
+    label: ROAS
+    description: Return on ad spend. Revenue divided by media spend.
+    expression: sum(revenue_usd) / nullif(sum(spend_usd), 0)
+    grain: [event_date, campaign_name, channel]
+    unit: ratio
+    ambiguity: >
+      Undefined when spend is zero, which is the case for the '(direct)' pseudo-campaign.
+      Campaign-level ROAS EXCLUDES direct traffic; blended_roas INCLUDES it. These two
+      numbers will never match, and a question that does not specify which one is
+      ambiguous. Ask.
+
+  - name: blended_roas
+    label: Blended ROAS
+    description: Total revenue across all traffic, divided by total paid media spend.
+    expression: sum(revenue_usd) / nullif(sum(spend_usd), 0)
+    grain: [event_date]
+    unit: ratio
+    ambiguity: >
+      Includes revenue from '(direct)' sessions in the numerator while their zero spend
+      contributes nothing to the denominator. Blended ROAS is therefore always >= the
+      spend-weighted average of campaign ROAS. This is intended, and it is why the
+      finance team and the media team quote different numbers for the same week.
+
+  - name: cac
+    label: Customer Acquisition Cost
+    description: Media spend divided by the number of purchasing customers.
+    expression: sum(spend_usd) / nullif(sum(purchasing_customers), 0)
+    grain: [event_date, campaign_name, channel]
+    unit: usd
+    ambiguity: >
+      Counts PURCHASING customers, not NEW customers. A returning buyer is included in
+      the denominator, so this understates true new-customer acquisition cost. For
+      new-customer CAC, join to customer_ltv on first_order_date. If the user says
+      "CAC" without qualification, state which definition you used.
+
+  - name: cpa
+    label: Cost per Acquisition
+    description: Media spend divided by the number of transactions.
+    expression: sum(spend_usd) / nullif(sum(transactions), 0)
+    grain: [event_date, campaign_name, channel]
+    unit: usd
+    ambiguity: >
+      Per TRANSACTION, unlike CAC which is per customer. They diverge whenever repeat
+      purchase is non-trivial; in this warehouse the repeat rate is ~30%, so CAC runs
+      roughly 1.4x CPA.
+
+  - name: ctr
+    label: Click-Through Rate
+    description: Clicks divided by impressions.
+    expression: sum(clicks) / nullif(sum(impressions), 0)
+    grain: [event_date, campaign_name, channel]
+    unit: ratio
+    ambiguity: null
+
+  - name: cpc
+    label: Cost per Click
+    description: Media spend divided by clicks.
+    expression: sum(spend_usd) / nullif(sum(clicks), 0)
+    grain: [event_date, campaign_name, channel]
+    unit: usd
+    ambiguity: null
+
+  - name: cvr
+    label: Conversion Rate
+    description: Transactions divided by sessions.
+    expression: sum(transactions) / nullif(sum(sessions), 0)
+    grain: [event_date, campaign_name, channel]
+    unit: ratio
+    ambiguity: >
+      Session-based, not click-based and not user-based. Roughly 6% of clicks never
+      become sessions, so click-based CVR is lower.
+
+  - name: aov
+    label: Average Order Value
+    description: Revenue divided by transactions.
+    expression: sum(revenue_usd) / nullif(sum(transactions), 0)
+    grain: [event_date, campaign_name, channel]
+    unit: usd
+    ambiguity: null
+
+dimensions:
+  - name: event_date
+    type: date
+    description: Calendar date of the event, UTC.
+  - name: campaign_name
+    type: string
+    description: >
+      Campaign identifier. The literal '(direct)' denotes unattributed traffic and is
+      NOT a real campaign. Exclude it from campaign rankings unless asked otherwise.
+  - name: channel
+    type: string
+    description: >
+      Media channel. 'paid_search_brand' is branded search and converts ~5x better than
+      'paid_search_nonbrand'. Analysts routinely exclude it when judging incrementality,
+      because branded clicks largely cannibalise organic demand. If a user asks for
+      paid search performance without saying whether to include brand, ask.
+  - name: device_category
+    type: string
+    description: One of desktop, mobile, tablet.
+  - name: country
+    type: string
+    description: Session country.
+
+conventions:
+  default_date_range: last_28_days
+  fiscal_year_start: "01-01"
+  currency: USD
+  timezone: UTC
+  rounding: >
+    Ratios to 4 decimal places, currency to 2. Never round before aggregating.

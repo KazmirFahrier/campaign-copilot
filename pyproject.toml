@@ -1,0 +1,63 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "campaign-copilot"
+version = "0.1.0"
+description = "An LLM analyst for marketing data: semantic layer, sandboxed tools, and an evaluation harness with a hallucination SLO."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Kazmir Fahrier" }]
+keywords = ["llm", "agents", "rag", "evaluation", "dbt", "duckdb", "semantic-layer"]
+
+dependencies = [
+    "duckdb>=1.0",
+    "sqlglot>=25.0",
+    "pydantic>=2.7",
+    "pyyaml>=6.0",
+    "pandas>=2.2",
+    "numpy>=1.26",
+]
+
+[project.optional-dependencies]
+warehouse = ["dbt-core>=1.8", "dbt-duckdb>=1.8"]
+dev = ["pytest>=8.0", "pytest-cov>=5.0", "ruff>=0.6", "mypy>=1.11", "pre-commit>=3.7"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/campaign_copilot"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+
+[tool.coverage.run]
+source = ["src/campaign_copilot"]
+branch = true
+
+[tool.ruff]
+line-length = 96
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "SIM", "RUF", "ANN", "D"]
+ignore = ["D203", "D213", "ANN401"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["D103", "ANN001", "ANN201"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src/campaign_copilot"]
+warn_unreachable = true
+
+[[tool.mypy.overrides]]
+module = ["duckdb.*", "yaml.*", "sqlglot.*", "pandas.*", "numpy.*"]
+ignore_missing_imports = true

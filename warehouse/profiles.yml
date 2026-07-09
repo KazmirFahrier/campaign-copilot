@@ -1,0 +1,8 @@
+campaign_copilot:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      path: campaign_copilot.duckdb
+      threads: 4
+      extensions: []
