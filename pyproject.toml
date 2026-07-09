@@ -62,6 +62,13 @@ warn_unreachable = true
 module = ["duckdb.*", "yaml.*", "sqlglot.*", "pandas.*", "numpy.*"]
 ignore_missing_imports = true
 
+# The vendor SDKs are optional extras, imported lazily inside the adapters. CI does not
+# install them, and the package must be usable without either. ScriptedClient is what
+# the test suite and the eval harness actually run against.
+[[tool.mypy.overrides]]
+module = ["anthropic.*", "openai.*", "tiktoken.*"]
+ignore_missing_imports = true
+
 # The generator is a vectorized numpy/pandas script. numpy's Generator methods are
 # untyped upstream, so `disallow_untyped_calls` fires on every `rng.poisson(...)`.
 # Silencing it there is honest; silencing it repo-wide would not be. Everything the

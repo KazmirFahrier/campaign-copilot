@@ -8,10 +8,11 @@ layer, executing it in a sandbox, and refusing to state a number it cannot trace
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-> **Status: Phase 0 + guardrails complete.** The warehouse, semantic layer, and SQL guardrail
-> are built and tested. The agent loop, RAG, evaluation harness, and deployment are not.
-> This README describes what exists; the roadmap at the bottom describes what does not.
-> Nothing here claims to be finished.
+> **Status: Phases 0-1 complete.** The warehouse, semantic layer, SQL guardrail, and LLM
+> core are built and tested (85 tests, 87% branch coverage, `mypy --strict`). The agent
+> loop, RAG, evaluation harness, and deployment are not. This README describes what
+> exists; the roadmap at the bottom describes what does not. Nothing here claims to be
+> finished.
 
 ---
 
@@ -123,12 +124,39 @@ The violation `code` is machine-readable on purpose: it is what gets returned to
 structured tool error, so the repair loop has something to act on instead of retrying the same
 hallucination.
 
+## The LLM core
+
+Nothing in `src/campaign_copilot/llm/` imports a vendor SDK at module scope. The agent
+depends on the `LLMClient` protocol; `AnthropicClient` and `OpenAIClient` import their SDKs
+lazily inside `__init__`, and `ScriptedClient` replays a fixed list of responses. That last
+one is why the Phase 4 regression suite can run the whole agent loop in CI, deterministically,
+with no key and no cost.
+
+Three pieces do the real work:
+
+- **`structured.py`** — every response is a validated Pydantic model. On a validation failure
+  the *specific* error is fed back to the model, which is the difference between a repair and
+  a retry. The loop is bounded at `max_repairs`; an unbounded repair loop is a cost incident.
+  `RepairStats.valid_first_try` is recorded per call and aggregates into the
+  `schema_validity_rate` metric in the eval report.
+- **`tokens.py`** — `HeuristicCounter` divides by 3.2 rather than 4, so it *over*-estimates.
+  A budget that passes offline must pass at the provider; erring low is the bug. Eviction is
+  newest-first, explicit, and returned to the caller. If the non-evictable content alone
+  overflows, it raises rather than silently truncating.
+- **`memory.py`** — verbatim buffer for pronoun resolution, rolling summary for everything
+  older, and **pinned facts that never evict**. A summary that quietly drops "exclude branded
+  search" produces an answer that is wrong in the one way the user explicitly asked it not
+  to be. There is a test named after exactly that.
+
+Prompts are files with content hashes (`prompts.py`), not f-strings. Every eval run records
+the fingerprint, so a metric regression can be bisected to a prompt change.
+
 ## Roadmap
 
 | Phase | Scope | Status |
 |---|---|---|
 | 0 | dbt warehouse, semantic layer, CI, packaging | ✅ done |
-| 1 | LLM core: provider adapters, structured outputs, token budget, multi-turn memory | ⬜ next |
+| 1 | LLM core: provider adapters, structured outputs, token budget, multi-turn memory | ✅ done |
 | 2 | Agent + MCP tool servers (SQL, sandboxed Python, ads API) | 🟨 guardrail done |
 | 3 | Hybrid RAG over schema and metric docs, grounded citations | ⬜ |
 | 4 | **Evaluation harness** — golden SQL, multi-turn regression, κ-validated LLM judge | ⬜ |
