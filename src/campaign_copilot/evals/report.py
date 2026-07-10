@@ -11,13 +11,17 @@ number a client will read.
 from __future__ import annotations
 
 import json
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from campaign_copilot.resources import REPO_ROOT
+
 __all__ = ["TOLERANCES", "check_regression", "render_report", "save_history"]
 
-HISTORY_DIR = Path(__file__).resolve().parents[3] / "evals" / "history"
+#: Written by developers and by CI, never by an installed service.
+HISTORY_DIR = Path(os.getenv("CC_EVALS_DIR", REPO_ROOT / "evals")) / "history"
 BASELINE = HISTORY_DIR / "baseline.json"
 
 #: How much each metric may move before a run is a regression. Counters must not move at all.

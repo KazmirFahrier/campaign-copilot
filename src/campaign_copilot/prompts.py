@@ -12,9 +12,9 @@ from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
 
-__all__ = ["Prompt", "PromptRegistry"]
+from campaign_copilot.resources import resource_dir
 
-DEFAULT_PROMPT_DIR = Path(__file__).resolve().parents[2] / "prompts"
+__all__ = ["Prompt", "PromptRegistry"]
 
 
 @dataclass(frozen=True)
@@ -43,7 +43,11 @@ class PromptRegistry:
     @classmethod
     def load(cls, directory: str | Path | None = None) -> PromptRegistry:
         """Read every ``*.md`` in ``directory`` into the registry."""
-        path = Path(directory) if directory is not None else DEFAULT_PROMPT_DIR
+        path = (
+            Path(directory)
+            if directory is not None
+            else resource_dir("prompts", "prompts", env_var="CC_PROMPTS_DIR")
+        )
         if not path.is_dir():
             raise FileNotFoundError(f"No prompt directory at {path}")
         found = {

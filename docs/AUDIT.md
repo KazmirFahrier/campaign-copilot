@@ -513,3 +513,100 @@ The trajectory is the point. Round one: missing edges. Round two: wrong instrume
 the audit itself is not exempt. Each round found a class of error the previous round's method
 could not see, and there is no reason to believe round four would find nothing -- only that it
 would need a method I have not used yet.
+
+---
+
+# Audit, round four
+
+The method for this round was the one named at the end of round three: **stop trusting the
+working directory.** Clone the repository fresh, build the wheel, install it where no source
+tree exists, and run the thing the way a container does.
+
+It found a P0 in the first ninety seconds.
+
+| # | Severity | Finding | Status |
+|---|---|---|---|
+| R4-1 | **P0** | The installed package cannot find its own `metrics.yml` or prompts; both containers crash-loop on startup | fixed; new CI job makes the method permanent |
+| R4-2 | **P1** | Two requests on one `session_id` ran the agent concurrently against one `ConversationMemory` | fixed |
+| R4-3 | **P2** | An abandoned SSE stream leaks the connection: `releaseLock()` does not cancel the body | fixed |
+| R4-4 | **P2** | The first test written for R4-2 could not detect the race it was named after | fixed |
+
+## R4-1. The application could not start when installed
+
+```console
+$ pip wheel . && pip install dist/*.whl     # exactly what both Dockerfiles do
+$ python -c "from campaign_copilot.semantic import SemanticLayer; SemanticLayer.load()"
+FileNotFoundError: '/tmp/venv/lib/python3.12/semantic/metrics.yml'
+```
+
+Five modules computed their data paths as `Path(__file__).resolve().parents[3] / "semantic"`,
+which is the repository root **only when the package is imported from a source checkout**. Under
+a non-editable install, `parents[3]` lands inside `site-packages`. `create_app` calls
+`build_tools` calls `SemanticLayer.load()`, so the api image would have crash-looped on its first
+container start. The executor image would have died on `PromptRegistry.load()`.
+
+The wheel did not contain `metrics.yml`, `prompts/`, or the eval datasets at all. `pyproject.toml`
+packaged `src/campaign_copilot` and nothing else.
+
+Nothing caught it, and the reasons are worth stating precisely:
+
+- CI installs with `pip install -e`, which puts the checkout on the path and makes a packaged
+  application look like a script.
+- The test suite runs from the checkout, so the fallback always resolves.
+- The images were never built, which round two recorded honestly and round two's *fix* — adding
+  the missing `service` extra — made me feel the Dockerfiles were now correct. They were less
+  wrong. They still could not start.
+
+Fixed with one resolver (`campaign_copilot/resources.py`): environment variable, then data
+force-included into the wheel under `campaign_copilot/_data/`, then the source checkout. A
+missing resource now raises naming all three locations, because a `FileNotFoundError` that does
+not say where it looked is a bug report nobody can act on.
+
+**And the method is now a gate.** CI's `package` job builds the wheel, installs it into a venv
+with no source tree, and starts both service factories. Deleting the `force-include` block from
+`pyproject.toml` fails it — verified by mutation.
+
+## R4-2 and R4-4. The lock, and the test that could not see why it was needed
+
+`SessionStore` was carefully locked. The `ConversationMemory` it hands out was not. Two requests
+with the same `session_id` — two browser tabs — ran the agent concurrently against one memory
+object, appending turns from two threads while `compress()` could interleave with `render()`.
+
+The first test I wrote for this posted three concurrent requests and asserted all three turns
+were recorded. **It passed with the lock removed.** `list.append` is atomic, so the assertion
+could never fail, and the test was named after a race it was structurally incapable of
+observing. That is round two's finding wearing new clothes, committed by the person who wrote
+round two.
+
+Replaced with a probe that measures peak overlap: an `LLMClient` that increments a counter,
+sleeps, and decrements. Same session → peak 1. Different sessions → peak > 1. Both mutations
+now fail:
+
+```console
+lock removed        -> test_turns_on_one_session_are_serialised     FAILED
+lock made global    -> test_the_lock_is_per_session_not_global      FAILED
+```
+
+The second test exists because a single global lock also makes the first one pass, and would
+serialise every user in the process.
+
+## R4-3. Abandoned streams leaked
+
+`streamChat` released the reader lock in `finally` but never cancelled the body. A consumer that
+`break`s out of the `for await` — a user navigating away, a component unmounting — left the HTTP
+request open until the server finished a fifteen-second query. `reader.cancel()` now runs first.
+
+## Standing count after four rounds
+
+Twenty-nine findings. Twenty-five fixed, four open and named.
+
+Each round's method was blind to the next round's class of error, and this round is no exception
+to that pattern — it is an instance of it. Rounds one through three all ran from a working
+directory I had been editing for hours, with an editable install, and could not have found R4-1
+by any amount of care. The finding required a different *environment*, not more diligence.
+
+If there is a round five, the method should again be one that has not been used: run the images.
+Not review them, not typecheck them, not install the wheel — build the containers and hit
+`/v1/chat`. Two of this round's four findings existed because "never built" was recorded as a
+caveat rather than treated as an untested execution path, and a caveat, however honest, catches
+nothing.

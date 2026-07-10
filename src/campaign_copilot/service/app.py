@@ -189,6 +189,7 @@ class SessionStore:
         self._factory = factory
         self._max = max_sessions
         self._sessions: OrderedDict[str, ConversationMemory] = OrderedDict()
+        self._turn_locks: dict[str, threading.Lock] = {}
         self._lock = threading.Lock()
 
     def get(self, session_id: str) -> ConversationMemory:
@@ -198,10 +199,24 @@ class SessionStore:
             if memory is None:
                 memory = self._factory(session_id)
                 self._sessions[session_id] = memory
+                self._turn_locks[session_id] = threading.Lock()
             self._sessions.move_to_end(session_id)
             while len(self._sessions) > self._max:
-                self._sessions.popitem(last=False)
+                evicted, _ = self._sessions.popitem(last=False)
+                self._turn_locks.pop(evicted, None)
             return memory
+
+    def turn_lock(self, session_id: str) -> threading.Lock:
+        """Serialize turns within one session.
+
+        `SessionStore` was locked; the `ConversationMemory` it hands out was not. Two requests
+        on the same `session_id` -- two browser tabs -- ran the agent concurrently against one
+        memory, appending turns from two threads and letting `compress()` interleave with
+        `render()` (docs/AUDIT.md, R4-2). Sessions are cheap to serialize: a conversation is
+        sequential by definition.
+        """
+        with self._lock:
+            return self._turn_locks.setdefault(session_id, threading.Lock())
 
     def __len__(self) -> int:
         """How many live sessions are held."""
@@ -371,7 +386,9 @@ def create_app(
                     checker=GroundingChecker(),
                     max_steps=config.max_steps,
                 )
-                result = agent.run(body.question, on_event=emit)
+                # A conversation is sequential. Two tabs on one session must not interleave.
+                with sessions.turn_lock(body.session_id):
+                    result = agent.run(body.question, on_event=emit)
                 metrics.record(
                     total_tokens=result.trace.usage.total_tokens,
                     tool_failures=sum(1 for s in result.trace.steps if s.tool and not s.ok),

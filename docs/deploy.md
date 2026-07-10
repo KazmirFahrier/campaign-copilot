@@ -8,7 +8,7 @@ same species of lie as an ungrounded number, and this project is about not telli
 | Artifact | Verified how | Not verified |
 |---|---|---|
 | `deploy/terraform/*.tf` | `terraform fmt -check`, `terraform validate` against the real `hashicorp/google` v6 provider schema | never applied; no plan against a project. **`validate` checks syntax and provider schema. It says nothing about whether the two services can talk** — it passed for weeks while the api sent no auth token to an executor that requires one (`docs/AUDIT.md`, P0-2). |
-| `deploy/Dockerfile.api`, `.executor` | reviewed | never built (no Docker in this environment) |
+| `deploy/Dockerfile.api`, `.executor` | reviewed; the wheel they install is built in CI, installed into a venv with no source tree, and both service factories are started (`package` job) | never built as images (no Docker in this environment) |
 | `deploy/docker-compose.yml` | reviewed | never run |
 | `web/` | `tsc --noEmit` under `strict`, `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`; 7 unit tests via `node --test` | never served |
 | `service/app.py`, `service/executor.py` | 24 tests, including api↔executor over an in-process ASGI transport | never run under uvicorn in production |
@@ -63,6 +63,12 @@ boundary sits is a deployment decision, and it must not change a line of the loo
   exists.
 - **The executor's namespace is on local disk.** It does not survive an instance restart, and
   a session pinned to one instance is a session that vanishes. Same fix.
+- **The `package` CI job exists because of R4-1.** Every data path used to be resolved relative
+  to the repository, which is the same place as the package only under `pip install -e`. The
+  containers install non-editable, so `SemanticLayer.load()` raised `FileNotFoundError` at
+  startup and both images would have crash-looped. CI now builds the wheel, installs it where no
+  checkout exists, and starts both factories.
+
 - **No authentication on `/v1/chat`.** The api is `INGRESS_TRAFFIC_ALL` with no IAM invoker
   restriction. Do not put a key behind this without adding one.
 

@@ -14,11 +14,12 @@ layer, executing it in a sandbox, and refusing to state a number it cannot trace
 > in CI. **No `terraform apply` has been run and there is no live URL** —
 > [`docs/deploy.md`](docs/deploy.md) states exactly what is verified and what is not. See also
 > [`EVAL_REPORT.md`](EVAL_REPORT.md), [`docs/threat-model.md`](docs/threat-model.md), and
-> [`docs/AUDIT.md`](docs/AUDIT.md) — three rounds of self-audit, twenty-five defects, including
-> a false claim in this project's own evaluation report, a regression gate that could not see the
-> control it existed to protect, and an integrity check weak enough to hide a bug in the shipped
-> report. Twenty-one are fixed; four are open and named. The audit process itself introduced two
-> of the defects, which is written up rather than hidden.
+> [`docs/AUDIT.md`](docs/AUDIT.md) — four rounds of self-audit, twenty-nine defects: a false
+> claim in this project's own evaluation report, a regression gate that could not see the control
+> it existed to protect, an integrity check weak enough to hide a bug in the shipped report, and
+> an installed package that could not find its own configuration. Twenty-five are fixed; four are
+> open and named. The audit process itself introduced three of the defects, which is written up
+> rather than hidden.
 
 ---
 

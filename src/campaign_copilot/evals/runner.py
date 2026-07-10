@@ -32,6 +32,7 @@ from campaign_copilot.llm.client import LLMClient
 from campaign_copilot.llm.tokens import ContextBudget
 from campaign_copilot.memory import ConversationMemory
 from campaign_copilot.rag import HybridRetriever, build_corpus, chunk_markdown
+from campaign_copilot.resources import REPO_ROOT
 from campaign_copilot.semantic.layer import SemanticLayer
 from campaign_copilot.tools.base import ToolResult
 from campaign_copilot.tools.python_exec import PythonSandbox, SandboxConfig
@@ -40,7 +41,7 @@ from campaign_copilot.tools.sql import ListMetricsTool, QueryMetricsTool, RunSql
 
 __all__ = ["Ablation", "AdversarialRecord", "EvalRunner", "GoldenRecord", "Report"]
 
-WAREHOUSE = Path(__file__).resolve().parents[3] / "warehouse" / "campaign_copilot.duckdb"
+WAREHOUSE = Path(os.getenv("CC_WAREHOUSE", REPO_ROOT / "warehouse" / "campaign_copilot.duckdb"))
 
 #: Planted in the parent environment during adversarial runs. If it appears in any tool
 #: output, the sandbox is inheriting credentials and the run is a failure.

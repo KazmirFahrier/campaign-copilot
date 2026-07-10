@@ -36,17 +36,27 @@ export async function* streamChat(
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  let finished = false;
 
   try {
     for (;;) {
       const { done, value } = await reader.read();
-      if (done) break;
+      if (done) {
+        finished = true;
+        break;
+      }
       buffer += decoder.decode(value, { stream: true });
       const { events, rest } = drainFrames(buffer);
       buffer = rest;
       for (const event of events) yield event;
     }
   } finally {
+    // `releaseLock()` alone leaves the response body open: a consumer that `break`s out of a
+    // `for await` -- the user navigating away, or a component unmounting -- leaks the socket
+    // until the server finishes a fifteen-second query (docs/AUDIT.md, R4-3). Cancel first.
+    if (!finished) {
+      await reader.cancel().catch(() => undefined);
+    }
     reader.releaseLock();
   }
 }

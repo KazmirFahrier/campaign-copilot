@@ -53,6 +53,45 @@ jobs:
       - name: Report provenance check
         run: make report
 
+  # An editable install makes a packaged application look like a script. Every path resolved
+  # from `__file__` relative to the repo works under `-e` and breaks under `pip install .` --
+  # which is what the containers do. This job installs the wheel into a clean venv with no
+  # source tree and starts both service factories (docs/AUDIT.md, R4-1).
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build the wheel
+        run: pip wheel . --no-deps -w dist/
+
+      - name: Install it somewhere with no source checkout
+        run: |
+          python -m venv /tmp/clean-venv
+          /tmp/clean-venv/bin/pip install dist/*.whl fastapi httpx duckdb sqlglot pyyaml pandas numpy
+
+      - name: The package must find its own data and both factories must start
+        working-directory: /tmp
+        run: |
+          /tmp/clean-venv/bin/python - <<'PY'
+          from pathlib import Path
+          from campaign_copilot.semantic import SemanticLayer
+          from campaign_copilot.prompts import PromptRegistry
+          from campaign_copilot.evals import load_golden
+          from campaign_copilot.service.executor import create_app as executor_app
+          from campaign_copilot.service.app import Settings, create_app as api_app
+
+          assert SemanticLayer.load().metrics, "metrics.yml not found in the wheel"
+          assert PromptRegistry.load().prompts, "prompts not found in the wheel"
+          assert load_golden(), "eval datasets not found in the wheel"
+          executor_app(environ={"PATH": "/usr/bin"})
+          api_app(settings=Settings(warehouse_path=Path("/nonexistent.duckdb")))
+          print("installed package is self-contained")
+          PY
+
   infra:
     runs-on: ubuntu-latest
     steps:

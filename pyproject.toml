@@ -37,6 +37,14 @@ dev = [
 [tool.hatch.build.targets.wheel]
 packages = ["src/campaign_copilot"]
 
+# The wheel must be self-contained. Without this, `pip install .` produces a package that
+# cannot find its own metrics.yml or prompts, and both containers crash-loop on startup
+# (docs/AUDIT.md, R4-1). CI installs with `-e`, so nothing noticed for six phases.
+[tool.hatch.build.targets.wheel.force-include]
+"semantic/metrics.yml" = "campaign_copilot/_data/metrics.yml"
+"prompts" = "campaign_copilot/_data/prompts"
+"evals/datasets" = "campaign_copilot/_data/datasets"
+
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]

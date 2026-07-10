@@ -12,8 +12,10 @@ FROM python:3.12-slim
 RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin api \
  && mkdir -p /app/warehouse && chown api:api /app/warehouse
 COPY --from=build /install /usr/local
-COPY --chown=api:api semantic /app/semantic
-COPY --chown=api:api prompts /app/prompts
+# `semantic/metrics.yml` and `prompts/` are force-included into the wheel (see pyproject.toml),
+# so the package resolves them from `campaign_copilot/_data/` and needs no COPY here. Before
+# that, `pip install .` produced a package that could not find its own metrics and this image
+# crash-looped on startup (docs/AUDIT.md, R4-1).
 # The warehouse is NOT baked in. It is a build artifact, gitignored, produced by `make
 # warehouse`; an earlier COPY of it made this image unbuildable from a clean checkout. Mount it,
 # or point CC_WAREHOUSE at BigQuery. /readyz returns 503 until it can answer `select 1`.

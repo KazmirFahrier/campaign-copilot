@@ -27,6 +27,8 @@ from typing import Any
 
 import yaml
 
+from campaign_copilot.resources import resource_path
+
 __all__ = [
     "Dimension",
     "Metric",
@@ -36,8 +38,12 @@ __all__ = [
     "UnknownMetricError",
 ]
 
-DEFAULT_METRICS_PATH = Path(__file__).resolve().parents[3] / "semantic" / "metrics.yml"
 DEFAULT_TABLE = "main_marts.campaign_performance_daily"
+
+
+def _default_metrics_path() -> Path:
+    """Resolved lazily: an installed wheel and a checkout keep the file in different places."""
+    return resource_path("metrics.yml", "semantic/metrics.yml", env_var="CC_METRICS_PATH")
 
 
 class SemanticError(ValueError):
@@ -133,7 +139,7 @@ class SemanticLayer:
     @classmethod
     def load(cls, path: str | Path | None = None) -> SemanticLayer:
         """Parse ``metrics.yml`` into a registry of metrics, dimensions and conventions."""
-        p = Path(path) if path is not None else DEFAULT_METRICS_PATH
+        p = Path(path) if path is not None else _default_metrics_path()
         raw: Mapping[str, Any] = yaml.safe_load(p.read_text(encoding="utf-8"))
 
         metrics = {

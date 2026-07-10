@@ -21,6 +21,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from campaign_copilot.resources import resource_dir
+
 __all__ = [
     "AdversarialCase",
     "Category",
@@ -31,7 +33,11 @@ __all__ = [
     "load_multi_turn",
 ]
 
-DATASET_DIR = Path(__file__).resolve().parents[3] / "evals" / "datasets"
+
+def _dataset_dir() -> Path:
+    """Resolved lazily; see campaign_copilot.resources."""
+    return resource_dir("datasets", "evals/datasets")
+
 
 Category = Literal["simple", "join", "window", "ambiguous"]
 
@@ -87,14 +93,15 @@ def _read(path: Path) -> Iterator[dict[str, object]]:
 def load_golden(path: Path | None = None) -> list[GoldenCase]:
     """Load `golden_sql.jsonl`."""
     return [
-        GoldenCase.model_validate(r) for r in _read(path or DATASET_DIR / "golden_sql.jsonl")
+        GoldenCase.model_validate(r) for r in _read(path or _dataset_dir() / "golden_sql.jsonl")
     ]
 
 
 def load_multi_turn(path: Path | None = None) -> list[MultiTurnCase]:
     """Load `multi_turn.jsonl`."""
     return [
-        MultiTurnCase.model_validate(r) for r in _read(path or DATASET_DIR / "multi_turn.jsonl")
+        MultiTurnCase.model_validate(r)
+        for r in _read(path or _dataset_dir() / "multi_turn.jsonl")
     ]
 
 
@@ -102,5 +109,5 @@ def load_adversarial(path: Path | None = None) -> list[AdversarialCase]:
     """Load `adversarial.jsonl`."""
     return [
         AdversarialCase.model_validate(r)
-        for r in _read(path or DATASET_DIR / "adversarial.jsonl")
+        for r in _read(path or _dataset_dir() / "adversarial.jsonl")
     ]

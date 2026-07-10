@@ -9,6 +9,7 @@ deployment property, which rots silently, into an assertion that fails loudly.
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -434,3 +435,83 @@ def test_the_secrets_assertion_is_injectable_so_the_suite_can_run_anywhere() -> 
     create_executor(environ={"PATH": "/usr/bin", "K_SERVICE": "executor"})
     with pytest.raises(SecretsVisibleError):
         create_executor(environ={"ANTHROPIC_API_KEY": "sk-real"})
+
+
+class _ConcurrencyProbe:
+    """An LLM client that reports the peak number of agents running at once."""
+
+    model = "probe"
+
+    def __init__(self, counters: dict[str, int], lock: threading.Lock) -> None:
+        self._counters = counters
+        self._lock = lock
+
+    def complete(self, *args: Any, **kwargs: Any) -> Any:
+        import time
+
+        from campaign_copilot.llm.client import LLMResponse
+
+        with self._lock:
+            self._counters["live"] += 1
+            self._counters["peak"] = max(self._counters["peak"], self._counters["live"])
+        time.sleep(0.05)
+        with self._lock:
+            self._counters["live"] -= 1
+        return LLMResponse(text=plan("answer", answer="A."), model="probe")
+
+    def count_tokens(self, text: str) -> int:
+        return 1
+
+
+def _peak_concurrency(session_ids: list[str]) -> int:
+    import threading
+
+    counters = {"live": 0, "peak": 0}
+    lock = threading.Lock()
+    app = create_app(
+        settings=Settings(warehouse_path=DB),
+        client_factory=lambda: _ConcurrencyProbe(counters, lock),
+        tools={},
+    )
+    client = TestClient(app)
+
+    threads = [
+        threading.Thread(
+            target=lambda sid=sid: client.post(  # type: ignore[misc]
+                "/v1/chat", json={"question": "q", "session_id": sid}
+            )
+        )
+        for sid in session_ids
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    return counters["peak"]
+
+
+def test_turns_on_one_session_are_serialised() -> None:
+    """docs/AUDIT.md, R4-2. SessionStore was locked; the memory it handed out was not.
+
+    An earlier version of this test posted three requests and asserted all three turns were
+    recorded. It passed with the lock removed -- `list.append` is atomic, so it could not see
+    the race it was named after. This one measures the thing directly: peak overlap.
+    """
+    assert _peak_concurrency(["shared", "shared", "shared"]) == 1
+
+
+def test_the_lock_is_per_session_not_global() -> None:
+    """A global lock would also make the test above pass, and would serialise every user."""
+    assert _peak_concurrency(["a", "b", "c"]) > 1
+
+
+def test_the_turn_lock_is_dropped_when_a_session_is_evicted() -> None:
+    """An LRU that evicts sessions but keeps their locks is a slow leak."""
+    from campaign_copilot.service.app import SessionStore
+
+    store = SessionStore(lambda sid: ConversationMemory(sid, ContextBudget(1000, 100)), 2)
+    for sid in ("a", "b", "c"):
+        store.get(sid)
+        store.turn_lock(sid)
+    assert len(store._turn_locks) <= 3
+    assert "a" not in store._sessions
