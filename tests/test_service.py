@@ -515,3 +515,28 @@ def test_the_turn_lock_is_dropped_when_a_session_is_evicted() -> None:
         store.turn_lock(sid)
     assert len(store._turn_locks) <= 3
     assert "a" not in store._sessions
+
+
+def test_metrics_expose_a_cancelled_counter() -> None:
+    """A disconnected client is neither an answer nor an error. It gets its own bucket."""
+    client = _app([plan("answer", answer="ROAS was 9.70.")])
+    client.post("/v1/chat", json={"question": "roas?"})
+    assert "cancelled" in client.get("/metrics").json()
+
+
+def test_readiness_reports_the_executor_when_one_is_configured() -> None:
+    """docs/AUDIT.md, R5-2, verified over real HTTP and pinned here.
+
+    /readyz must fail closed when a configured dependency is down; /healthz must not, or a
+    dependency outage restarts the process instead of draining the revision.
+    """
+    app = create_app(
+        settings=Settings(warehouse_path=DB, executor_url="http://127.0.0.1:59999"),
+        client_factory=lambda: ScriptedClient([]),
+        tools={},
+    )
+    client = TestClient(app)
+    body = client.get("/readyz").json()
+    assert body["ready"] is False
+    assert "executor" in body["checks"]
+    assert client.get("/healthz").status_code == 200

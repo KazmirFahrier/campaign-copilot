@@ -128,6 +128,7 @@ class Metrics:
     errors: int = 0
     answers: int = 0
     clarifications: int = 0
+    cancelled: int = 0
     ungrounded_blocked: int = 0
     tool_failures: int = 0
     total_tokens: int = 0
@@ -162,6 +163,7 @@ class Metrics:
             "errors": self.errors,
             "answers": self.answers,
             "clarifications": self.clarifications,
+            "cancelled": self.cancelled,
             "ungrounded_blocked": self.ungrounded_blocked,
             "tool_failures": self.tool_failures,
             "total_tokens": self.total_tokens,
@@ -363,6 +365,9 @@ def create_app(
         rid = request_id.get()
         queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
         loop = asyncio.get_running_loop()
+        # Flipped when the client disconnects. The worker polls it between steps and stops,
+        # rather than running the whole plan for a client that has gone (docs/AUDIT.md, R5-1).
+        cancel = threading.Event()
 
         def emit(event: dict[str, Any]) -> None:
             loop.call_soon_threadsafe(queue.put_nowait, {**event, "request_id": rid})
@@ -388,12 +393,14 @@ def create_app(
                 )
                 # A conversation is sequential. Two tabs on one session must not interleave.
                 with sessions.turn_lock(body.session_id):
-                    result = agent.run(body.question, on_event=emit)
+                    result = agent.run(body.question, on_event=emit, is_cancelled=cancel.is_set)
                 metrics.record(
                     total_tokens=result.trace.usage.total_tokens,
                     tool_failures=sum(1 for s in result.trace.steps if s.tool and not s.ok),
                 )
-                if result.needs_clarification:
+                if result.cancelled:
+                    metrics.record(cancelled=1)
+                elif result.needs_clarification:
                     metrics.record(clarifications=1)
                 elif result.ok:
                     metrics.record(answers=1)
@@ -417,7 +424,13 @@ def create_app(
             try:
                 while (event := await queue.get()) is not None:
                     yield _sse(event)
+            except asyncio.CancelledError:
+                # Starlette cancels this generator when the client disconnects. Signal the
+                # worker to stop at its next step, then let it drain rather than orphaning it.
+                cancel.set()
+                raise
             finally:
+                cancel.set()
                 await task
 
         return StreamingResponse(

@@ -610,3 +610,82 @@ Not review them, not typecheck them, not install the wheel — build the contain
 `/v1/chat`. Two of this round's four findings existed because "never built" was recorded as a
 caveat rather than treated as an untested execution path, and a caveat, however honest, catches
 nothing.
+
+---
+
+# Audit, round five
+
+The method named at the end of round four was "build the images and hit `/v1/chat`." There is
+no Docker in this environment, so the closest achievable was to run both services as **real
+uvicorn processes over real sockets** and drive them with `curl` — real HTTP, real SSE framing,
+real client disconnects, none of which the in-process `TestClient` exercises the same way.
+
+Most of what I checked held up, which is worth stating: the executor crash-loops under real
+uvicorn when a credential is in its environment; SSE frames arrive incrementally with the
+correct `text/event-stream`, `cache-control: no-cache`, and `x-accel-buffering: no` headers; the
+request id propagates into every frame; and `/readyz` returns 503 with a precise reason while
+`/healthz` stays 200 when a configured executor is unreachable. Those were design claims. Now
+they are observations.
+
+One thing did not hold up, and it is the kind that only a real disconnect reveals.
+
+| # | Severity | Finding | Status |
+|---|---|---|---|
+| R5-1 | **P1** | A disconnected client does not stop the work; the agent runs the whole plan for nobody | fixed |
+| R5-2 | — | (verified, not a defect) `/readyz` vs `/healthz` behave correctly over real HTTP | pinned by a test |
+
+## R5-1. Abandoned requests ran to completion, spending tokens on nobody
+
+The R4-3 fix made the *client* cancel its fetch on disconnect. It said nothing about the
+*server*. I drove a real request whose model calls each take two seconds, aborted `curl` after
+one second, and watched the worker:
+
+```
+client aborted after ~1s
+progress at abort:            step 1
+progress 7s after abort:      step 1, step 2, step 3      <- kept going
+```
+
+The agent ran its entire three-step plan for a client that had hung up. The mechanism: the SSE
+generator pulls events off a queue and the worker runs in a thread. When the client disconnects,
+Starlette cancels the generator — but the generator's cancellation never reached the thread, so
+the thread ran to completion. With a real LLM, every one of those steps is a paid API call and a
+slot of concurrency held for no one. A cheap way to turn a disconnect storm into a bill.
+
+Fixed with cooperative cancellation. The agent loop takes an `is_cancelled` predicate and polls
+it once per step, between model calls — never mid-tool, because a half-executed query left
+dangling is worse than one wasted call. The service passes a `threading.Event` that the SSE
+generator sets in both its `except CancelledError` and its `finally`. Re-run:
+
+```
+client aborted after ~1s
+progress 7s after abort:      step 1        <- stopped
+```
+
+`AgentResult.cancelled` and a `cancelled` metric distinguish this from an answer, a
+clarification, and an error, because "the user left" is none of those and lumping it in with
+errors would make the error rate lie.
+
+The deterministic tests mutation-check: removing the per-step cancellation poll fails both
+`test_the_agent_stops_between_steps_when_cancelled` and its mid-tool counterpart.
+
+## Why four rounds of in-process tests missed it
+
+`TestClient` issues a request and reads the whole response. It never disconnects mid-stream,
+because it has no reason to — it is not a browser tab someone closed. The behaviour under test
+only exists when a real client goes away while the server is mid-flight, and nothing before this
+round produced that condition. Round four found a defect that needed a different *install*;
+round five found one that needed a different *client*.
+
+## Standing count after five rounds
+
+Thirty findings. Twenty-six fixed, four open and named (pinned facts unreachable, `failure-modes.md`
+unwritten, multi-turn unscored, the residual grounding hole measured by `context_only`).
+
+The five methods, in order, and the class each one alone could find:
+source-reading (missing edges) → adversarial inputs (wrong instruments) → auditing the audit
+(the checker is not exempt) → fresh install (packaging) → real sockets (disconnect). No single
+method would have found more than its own class. The honest extrapolation is not "the project is
+now clean." It is "the next class of defect needs the next method I have not run" — and the
+obvious remaining one is still the literal container: `docker build`, `docker compose up`, and a
+load test that holds many streams open at once.

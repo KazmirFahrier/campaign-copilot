@@ -83,6 +83,11 @@ _SUMMARY_PROMPT = (
     "will be recomputed. Write prose, not a list."
 )
 
+_CANCELLED = (
+    "The request was cancelled before it finished. Nothing was left half-done: cancellation "
+    "happens between steps, never inside a tool call."
+)
+
 _BUDGET = (
     "I used all {steps} of my steps without reaching an answer. The last thing I did was "
     "`{last}`. This usually means the question needs to be narrowed."
@@ -182,6 +187,7 @@ class AgentResult:
     answer: str
     trace: AgentTrace
     needs_clarification: bool = False
+    cancelled: bool = False
 
 
 class Agent:
@@ -245,6 +251,8 @@ class Agent:
         self,
         question: str,
         on_event: Callable[[dict[str, Any]], None] | None = None,
+        *,
+        is_cancelled: Callable[[], bool] | None = None,
     ) -> AgentResult:
         """Answer ``question``, or explain why it will not.
 
@@ -252,8 +260,15 @@ class Agent:
         watching a fifteen-second query sees the plan, the SQL, and the grounding verdict as
         they happen rather than a spinner. Events are observations, never control flow: an
         exception raised by a subscriber must not be able to change what the agent does.
+
+        ``is_cancelled`` is polled once per step. When the streaming client disconnects, the
+        service flips it, and the loop stops before the next model call rather than running to
+        completion for a client that has gone -- which, with a real provider, is real tokens
+        spent on nobody (docs/AUDIT.md, R5-1). Cancellation is checked between steps, never
+        mid-tool: a half-executed query left dangling is worse than one wasted call.
         """
         emit = _safe_emitter(on_event)
+        cancelled = is_cancelled or (lambda: False)
         emit({"type": "start", "question": question})
         self.memory.add(Message(role="user", content=question))
 
@@ -275,6 +290,9 @@ class Agent:
         grounding_retries = self.max_grounding_retries
 
         for index in range(self.max_steps):
+            if cancelled():
+                emit({"type": "cancelled", "step": index})
+                return AgentResult(ok=False, answer=_CANCELLED, trace=trace, cancelled=True)
             system, fit = self.memory.render(self._system())
             try:
                 step, stats = self._generator.generate(

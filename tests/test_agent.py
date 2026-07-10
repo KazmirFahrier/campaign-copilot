@@ -13,6 +13,7 @@ from typing import Any
 import pytest
 
 from campaign_copilot.agent import Agent, Step
+from campaign_copilot.grounding import GroundingChecker
 from campaign_copilot.llm import ContextBudget, ScriptedClient
 from campaign_copilot.memory import ConversationMemory
 from campaign_copilot.tools.base import ToolResult, ToolSpec
@@ -403,3 +404,37 @@ def test_an_injected_memo_cannot_reach_an_unregistered_tool() -> None:
     result = agent.run("summarise q3")
     assert result.ok
     assert [s.error_code for s in result.trace.steps] == [None, "UNKNOWN_TOOL", None]
+
+
+def test_the_agent_stops_between_steps_when_cancelled() -> None:
+    """docs/AUDIT.md, R5-1. A disconnected client should not pay for the rest of the plan.
+
+    Cancellation is polled once per step. Given a plan of tool, tool, answer, a cancel that
+    trips after the first model call stops the loop before the second one.
+    """
+    tool = FakeTool("q", [ToolResult.success("roas 9.7013", rows=[[9.7013]])])
+    agent, client = build(
+        [
+            tool_step("q"),
+            tool_step("q"),
+            plan("answer", answer="ROAS was 9.70."),
+        ],
+        {"q": tool},
+        checker=GroundingChecker(),
+    )
+    result = agent.run("roas?", is_cancelled=lambda: len(client.calls) >= 1)
+
+    assert result.cancelled
+    assert not result.ok
+    assert len(client.calls) == 1, "the second model call must not happen"
+
+
+def test_cancellation_is_checked_between_steps_not_mid_tool() -> None:
+    """A cancel that trips before the first step yields zero model calls and no tool run."""
+    tool = FakeTool("q", [ToolResult.success("x", rows=[[1.0]])])
+    agent, client = build([tool_step("q")], {"q": tool}, checker=GroundingChecker())
+    result = agent.run("roas?", is_cancelled=lambda: True)
+
+    assert result.cancelled
+    assert len(client.calls) == 0
+    assert tool.calls == 0
