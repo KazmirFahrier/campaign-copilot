@@ -103,3 +103,19 @@ def test_load_writes_a_queryable_raw_schema(tmp_path, frames: dict[str, pd.DataF
     con = duckdb.connect(str(db), read_only=True)
     (n,) = con.execute("select count(*) from raw.raw_ad_performance").fetchone()
     assert n == len(frames["raw_ad_performance"])
+
+
+def test_the_data_reproduces_but_the_duckdb_file_does_not(tmp_path) -> None:
+    """docs/AUDIT.md, R2-6. The README claimed byte-for-byte reproducibility. It is false.
+
+    The generated frames are identical; the DuckDB file's bytes are not, because the format
+    records timestamps and page layout. Reproducibility is a claim about the data.
+    """
+    import hashlib
+
+    def build(name: str) -> str:
+        path = tmp_path / name
+        load(path, generate(np.random.default_rng(SEED), scale=SCALE))
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+
+    assert build("a.duckdb") != build("b.duckdb"), "if this ever passes, update the README"

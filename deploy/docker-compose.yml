@@ -33,6 +33,9 @@ services:
     cap_drop: [ALL]
     security_opt:
       - no-new-privileges:true
+    volumes:
+      # The warehouse is a build artifact, not part of the image. Run `make warehouse` first.
+      - ../warehouse/campaign_copilot.duckdb:/app/warehouse/campaign_copilot.duckdb:ro
     environment:
       CC_EXECUTOR_URL: http://executor:8080
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?set ANTHROPIC_API_KEY}

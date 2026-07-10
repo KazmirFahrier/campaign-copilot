@@ -22,8 +22,15 @@ GRID: list[tuple[Ablation, str]] = [
     (Ablation("no_grounding", grounding=False), "naive"),
     (Ablation("no_metric_atoms", metric_atoms=False), "naive"),
     (Ablation("no_semantic_layer", semantic_layer=False), "naive"),
+    (Ablation("no_star_check", star_check=False), "naive"),
     (
-        Ablation("nothing_but_sql", grounding=False, metric_atoms=False, semantic_layer=False),
+        Ablation(
+            "nothing_but_sql",
+            grounding=False,
+            metric_atoms=False,
+            semantic_layer=False,
+            star_check=False,
+        ),
         "naive",
     ),
 ]
@@ -56,14 +63,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"wrote {args.report}", file=sys.stderr)
     if args.write_baseline:
         BASELINE.parent.mkdir(parents=True, exist_ok=True)
-        BASELINE.write_text(json.dumps(ceiling, indent=2) + "\n", encoding="utf-8")
+        BASELINE.write_text(json.dumps(rows, indent=2) + "\n", encoding="utf-8")
         print(f"wrote {BASELINE}", file=sys.stderr)
 
     if args.gate:
         if not BASELINE.exists():
             print("no baseline; run --write-baseline first", file=sys.stderr)
             return 1
-        failures = check_regression(ceiling, json.loads(BASELINE.read_text()))
+        failures = check_regression(rows, json.loads(BASELINE.read_text()))
         if failures:
             print("\nREGRESSION:", file=sys.stderr)
             for failure in failures:

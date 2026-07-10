@@ -249,7 +249,8 @@ def test_the_platforms_own_variables_are_not_credentials() -> None:
 
 def test_the_executor_runs_code_and_persists_session_state() -> None:
     executor = create_executor(
-        PythonSandbox(config=SandboxConfig(timeout_seconds=5, cpu_seconds=5))
+        PythonSandbox(config=SandboxConfig(timeout_seconds=5, cpu_seconds=5)),
+        environ={"PATH": "/usr/bin"},
     )
     client = TestClient(executor)
 
@@ -264,7 +265,8 @@ def test_the_remote_sandbox_is_indistinguishable_from_the_local_one() -> None:
     assert RemoteSandbox.spec is PythonSandbox.spec
 
     executor = create_executor(
-        PythonSandbox(config=SandboxConfig(timeout_seconds=5, cpu_seconds=5))
+        PythonSandbox(config=SandboxConfig(timeout_seconds=5, cpu_seconds=5)),
+        environ={"PATH": "/usr/bin"},
     )
     # TestClient *is* an httpx.Client with a sync ASGI transport, which is exactly what a
     # RemoteSandbox wants. httpx.ASGITransport is async-only and cannot serve one.
@@ -425,3 +427,10 @@ def test_an_unauthenticated_executor_gets_no_header() -> None:
     )
     remote.run(code="print(42)")
     assert seen == [None]
+
+
+def test_the_secrets_assertion_is_injectable_so_the_suite_can_run_anywhere() -> None:
+    """docs/AUDIT.md, R2-5. A safety check that fails the tests is a check somebody weakens."""
+    create_executor(environ={"PATH": "/usr/bin", "K_SERVICE": "executor"})
+    with pytest.raises(SecretsVisibleError):
+        create_executor(environ={"ANTHROPIC_API_KEY": "sk-real"})

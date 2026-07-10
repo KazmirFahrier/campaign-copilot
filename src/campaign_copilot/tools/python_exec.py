@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import contextvars
 import pickle
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -127,6 +128,15 @@ class PythonSandbox:
             return ToolResult.failure("EMPTY_CODE", "No code was provided.")
 
         work = Path(tempfile.mkdtemp(dir=self.scratch))
+        try:
+            return self._execute(code, session_id, work)
+        finally:
+            # One directory per cell, in a process that runs for weeks. Removing them is the
+            # difference between a sandbox and a disk-exhaustion bug (docs/AUDIT.md, R2-8).
+            shutil.rmtree(work, ignore_errors=True)
+
+    def _execute(self, code: str, session_id: str, work: Path) -> ToolResult:
+        """Run one cell in an already-created scratch directory."""
         payload_path, result_path = work / "in.pkl", work / "out.pkl"
         with payload_path.open("wb") as handle:
             pickle.dump(

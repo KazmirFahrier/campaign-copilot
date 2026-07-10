@@ -43,19 +43,73 @@ def save_history(rows: list[dict[str, Any]], directory: Path = HISTORY_DIR) -> P
     return path
 
 
-def check_regression(current: dict[str, Any], baseline: dict[str, Any]) -> list[str]:
-    """Return every metric that moved the wrong way by more than its tolerance."""
+def _key(row: dict[str, Any]) -> str:
+    return f"{row['ablation']}/{row['policy']}"
+
+
+def check_regression(
+    current_rows: list[dict[str, Any]], baseline_rows: list[dict[str, Any]]
+) -> list[str]:
+    """Return every metric that moved the wrong way, across every row of the grid.
+
+    An earlier version compared only the `all_controls/oracle` row. The oracle is correct by
+    construction: it never ships an ungrounded number, so `ungrounded_answers_shipped` was
+    always 0 and the counter could never rise. **Deleting the grounding gate outright left the
+    gate green** (docs/AUDIT.md, R2-1). The counters that matter are produced by the *naive*
+    policy, which is the only one that tries to lie.
+
+    Two layers now:
+
+    * every row of the grid is compared against its baseline counterpart;
+    * the controls must still *bite* -- turning one off must make the corresponding failure
+      counter go up. A control that has been disabled everywhere passes the first check and
+      fails the second.
+    """
     failures: list[str] = []
-    for metric, tolerance in TOLERANCES.items():
-        now, then = float(current[metric]), float(baseline[metric])
-        if now < then - tolerance:
+    baseline = {_key(r): r for r in baseline_rows}
+    current = {_key(r): r for r in current_rows}
+
+    for key, row in current.items():
+        base = baseline.get(key)
+        if base is None:
+            failures.append(f"{key}: no baseline row; run --write-baseline")
+            continue
+        for metric, tolerance in TOLERANCES.items():
+            now, then = float(row[metric]), float(base[metric])
+            if now < then - tolerance:
+                failures.append(
+                    f"{key}.{metric}: {now:.4f} < baseline {then:.4f} (tol {tolerance})"
+                )
+        for counter in COUNTERS:
+            now_c, then_c = int(row[counter]), int(base[counter])
+            if now_c > then_c:
+                failures.append(f"{key}.{counter}: {now_c} > baseline {then_c}")
+
+    failures.extend(_controls_still_bite(current))
+    return failures
+
+
+def _controls_still_bite(rows: dict[str, dict[str, Any]]) -> list[str]:
+    """Assert that removing a control makes its failure counter rise.
+
+    If the grounding gate is disabled in the source, `all_controls` and `no_grounding` report
+    the same number of ungrounded answers, and every absolute comparison passes. Only the
+    *difference* between them reveals that the control is gone.
+    """
+    failures: list[str] = []
+    differentials = [
+        ("all_controls/naive", "no_grounding/naive", "ungrounded_answers_shipped"),
+        ("all_controls/naive", "no_metric_atoms/naive", "wrong_but_grounded"),
+    ]
+    for on, off, counter in differentials:
+        if on not in rows or off not in rows:
+            continue
+        if rows[off][counter] <= rows[on][counter]:
             failures.append(
-                f"{metric}: {now:.4f} < baseline {then:.4f} (tolerance {tolerance})"
+                f"control not biting: {counter} is {rows[off][counter]} with the control off "
+                f"and {rows[on][counter]} with it on. Removing a control must make its failure "
+                "counter rise; if it does not, the control is already gone."
             )
-    for counter in COUNTERS:
-        now, then = int(current[counter]), int(baseline[counter])
-        if now > then:
-            failures.append(f"{counter}: {now} > baseline {then}")
     return failures
 
 

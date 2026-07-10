@@ -251,3 +251,10 @@ def test_the_model_cannot_choose_which_session_it_executes_in(sandbox: PythonSan
 
     assert not stolen.ok
     assert "NameError" in stolen.content
+
+
+def test_scratch_directories_do_not_accumulate(sandbox: PythonSandbox) -> None:
+    """docs/AUDIT.md, R2-8. One directory per cell, in a process that runs for weeks."""
+    for i in range(5):
+        _in_session("gc", sandbox, code=f"x = {i}")
+    assert not [p for p in sandbox.scratch.iterdir() if p.is_dir()]

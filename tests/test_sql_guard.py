@@ -95,10 +95,7 @@ def test_comment_obfuscated_ddl_does_not_slip_through(guard: SqlGuard) -> None:
 def test_filesystem_function_is_rejected(guard: SqlGuard) -> None:
     with pytest.raises(GuardrailViolation) as err:
         guard.check("select col from read_csv('/etc/passwd')")
-    assert err.value.code in {
-        ViolationCode.FUNCTION_NOT_ALLOWED,
-        ViolationCode.TABLE_NOT_ALLOWED,
-    }
+    assert err.value.code == ViolationCode.FUNCTION_NOT_ALLOWED
 
 
 def test_unknown_table_is_rejected(guard: SqlGuard) -> None:
@@ -126,3 +123,23 @@ def test_unregistered_aggregate_over_a_fact_column_is_rejected(guard: SqlGuard) 
     with pytest.raises(GuardrailViolation) as err:
         guard.check(f"select channel, median(spend_usd) from {TABLE} group by 1")
     assert err.value.code == ViolationCode.UNREGISTERED_AGGREGATE
+
+
+def test_the_function_denylist_is_the_rule_that_blocks_read_csv(guard: SqlGuard) -> None:
+    """docs/AUDIT.md, R2-7.
+
+    This test used to accept either FUNCTION_NOT_ALLOWED or TABLE_NOT_ALLOWED. `read_csv(...)`
+    in a FROM clause parses as a Table, so the table allowlist fired first and the function
+    denylist was unreachable: deleting FORBIDDEN_FUNCTIONS entirely broke no test. A test that
+    accepts either answer cannot tell you which control works.
+    """
+    with pytest.raises(GuardrailViolation) as err:
+        guard.check("select col from read_csv('/etc/passwd')")
+    assert err.value.code == ViolationCode.FUNCTION_NOT_ALLOWED
+
+
+def test_the_denylist_covers_the_network_and_filesystem_reaches(guard: SqlGuard) -> None:
+    for sql in ["select glob('/etc/*')", "select read_parquet('/x.pq')", "select getenv('X')"]:
+        with pytest.raises(GuardrailViolation) as err:
+            guard.check(sql)
+        assert err.value.code == ViolationCode.FUNCTION_NOT_ALLOWED, sql

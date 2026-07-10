@@ -17,8 +17,9 @@ warehouse/logs/
 warehouse/dbt_packages/
 warehouse/.user.yml
 
-# The warehouse is a build artifact: `make warehouse` reproduces it byte-for-byte
-# from SEED. Committing 33 MB of DuckDB would be a lie about reproducibility.
+# The warehouse is a build artifact. `make warehouse` reproduces the *data* exactly from
+# SEED; the DuckDB file's bytes differ between runs (docs/AUDIT.md, R2-6). Committing 33 MB
+# of it would be a lie about reproducibility either way.
 warehouse/*.duckdb
 warehouse/*.duckdb.wal
 

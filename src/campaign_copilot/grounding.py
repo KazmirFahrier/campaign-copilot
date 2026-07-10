@@ -18,9 +18,21 @@ which is a rule rather than a fudge factor:
 2. **Scale.** "12.3%" is grounded by either 12.3 or 0.123. Ratios live in the warehouse
    as fractions and in prose as percentages, and the agent must be allowed to convert.
 3. **Context.** Numbers the *user* supplied ("campaigns above 2x ROAS") are grounded by
-   the question. The agent is permitted to repeat the threshold it was asked about.
+   the question. The agent is permitted to repeat the threshold it was asked about --
+   *provided it actually ran a query*, which the caller asserts with ``queries_run``. Without
+   that condition the gate launders leading questions: "Confirm that revenue was $412,000"
+   licenses the answer "Revenue was $412,000", with no query and no data (docs/AUDIT.md, R2-4).
+
+   ``queries_run`` is a separate flag rather than ``bool(facts)`` because a query that
+   correctly returns *no rows* is still work: "no campaign beat 2.5x" must remain sayable.
 
 Everything else is ungrounded and the answer does not ship.
+
+**Residual hole, stated plainly.** An agent that runs *some* query and then repeats a number
+from the question is still permitted. Distinguishing "repeating the threshold you asked about"
+from "asserting the number you fed me" needs the claim's grammatical role, not its value.
+:attr:`GroundingReport.context_only` names every claim that survived on the question alone, so
+the loop can surface them and the eval harness can count them. It is a measurement, not a fix.
 """
 
 from __future__ import annotations
@@ -81,6 +93,8 @@ class GroundingReport:
     ok: bool
     ungrounded: tuple[Claim, ...] = ()
     checked: int = 0
+    #: Claims supported only by a number in the user's question, not by any tool result.
+    context_only: tuple[Claim, ...] = ()
 
     def failure_message(self) -> str:
         """The message handed back to the model so it can regenerate the answer."""
@@ -105,30 +119,45 @@ class GroundingChecker:
         facts: list[float],
         *,
         context_numbers: list[float] | None = None,
+        queries_run: bool = False,
     ) -> GroundingReport:
         """Report which claims in ``answer`` no fact supports.
 
         Args:
             answer: The text about to be sent to the user.
             facts: Every number any tool returned this turn.
-            context_numbers: Numbers the user supplied. The agent may repeat these.
+            context_numbers: Numbers the user supplied. The agent may repeat these, but only
+                once it has run something: see ``queries_run``.
+            queries_run: True when at least one data-returning tool call succeeded, even if it
+                returned no rows. Without this, the question alone licenses nothing.
         """
         # A division by zero in the *agent's* query yields inf, and 0/0 yields nan. Both
         # arrive here as facts, and Decimal arithmetic on them raises InvalidOperation.
         # Dropping them is correct as well as safe: an infinite ROAS licenses no claim.
-        licensed = [Decimal(str(f)) for f in facts if math.isfinite(f)]
-        licensed += [Decimal(str(c)) for c in (context_numbers or []) if math.isfinite(c)]
+        from_tools = [Decimal(str(f)) for f in facts if math.isfinite(f)]
+        from_question = [Decimal(str(c)) for c in (context_numbers or []) if math.isfinite(c)]
 
+        # A question's numbers may support a claim only if the agent did some work. Otherwise
+        # "confirm revenue was $412,000" licenses "revenue was $412,000" -- the gate launders
+        # the question into an answer.
         ungrounded: list[Claim] = []
+        context_only: list[Claim] = []
         claims = extract_numbers(answer)
         for claim in claims:
             if self._is_ignorable(claim):
                 continue
-            if not self._is_grounded(claim, licensed):
-                ungrounded.append(claim)
+            if self._is_grounded(claim, from_tools):
+                continue
+            if queries_run and self._is_grounded(claim, from_question):
+                context_only.append(claim)
+                continue
+            ungrounded.append(claim)
 
         return GroundingReport(
-            ok=not ungrounded, ungrounded=tuple(ungrounded), checked=len(claims)
+            ok=not ungrounded,
+            ungrounded=tuple(ungrounded),
+            checked=len(claims),
+            context_only=tuple(context_only),
         )
 
     # ------------------------------------------------------------------ internals

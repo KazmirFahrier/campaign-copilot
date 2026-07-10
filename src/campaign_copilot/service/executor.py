@@ -101,9 +101,17 @@ class ExecResponse(BaseModel):
     error_code: str | None = None
 
 
-def create_app(sandbox: PythonSandbox | None = None) -> FastAPI:
-    """Build the executor app. `sandbox` is injectable so the suite can shrink the limits."""
-    assert_no_secrets()
+def create_app(
+    sandbox: PythonSandbox | None = None, environ: dict[str, str] | None = None
+) -> FastAPI:
+    """Build the executor app.
+
+    `environ` is injectable because `assert_no_secrets()` reads the real process environment,
+    and every developer with `ANTHROPIC_API_KEY` exported could not run the test suite
+    (docs/AUDIT.md, R2-5). A safety check that makes the tests fail is a safety check somebody
+    weakens. The production path still reads `os.environ`.
+    """
+    assert_no_secrets(environ)
     engine = sandbox or PythonSandbox(config=SandboxConfig())
     app = FastAPI(title="campaign-copilot executor", docs_url=None, redoc_url=None)
 

@@ -267,6 +267,9 @@ class Agent:
 
         context_numbers = [float(c.value) for c in extract_numbers(question)]
         facts: list[float] = []
+        # A query that correctly returns zero rows is still work. `bool(facts)` would say
+        # otherwise, and "no campaign beat 2.5x" would stop being sayable.
+        queries_run = False
         scratch: list[Message] = []
         consecutive_failures: dict[str, int] = {}
         grounding_retries = self.max_grounding_retries
@@ -308,7 +311,12 @@ class Agent:
 
             if step.action == "answer":
                 answer = step.answer or ""
-                report = self.checker.check(answer, facts, context_numbers=context_numbers)
+                report = self.checker.check(
+                    answer,
+                    facts,
+                    context_numbers=context_numbers,
+                    queries_run=queries_run,
+                )
                 trace.grounding = report
                 emit(
                     {
@@ -374,6 +382,7 @@ class Agent:
             if result.ok:
                 consecutive_failures[call.tool] = 0
                 facts.extend(result.numeric_facts())
+                queries_run = queries_run or result.grounds_numbers
             else:
                 consecutive_failures[call.tool] = failures + 1
                 if failures + 1 >= 2:

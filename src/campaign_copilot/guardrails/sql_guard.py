@@ -143,8 +143,12 @@ class SqlGuard:
         self._assert_select(tree)
 
         warnings: list[str] = []
-        self._check_tables(tree)
+        # Functions first. `read_csv('/etc/passwd')` in a FROM clause parses as a Table whose
+        # name is not on the allowlist, so checking tables first reported TABLE_NOT_ALLOWED and
+        # FORBIDDEN_FUNCTIONS was never reached. Deleting the entire denylist broke no test
+        # (docs/AUDIT.md, R2-7), because the test accepted either violation code.
         self._check_functions(tree)
+        self._check_tables(tree)
         if not self.config.allow_star:
             self._check_star(tree)
         if self.config.require_registered_aggregates and self.config.allowed_aggregates:

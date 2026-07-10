@@ -176,8 +176,10 @@ def test_all_controls_refuse_rather_than_lie() -> None:
 # ----------------------------------------------------------------------- gate
 
 
-def _baseline() -> dict[str, object]:
-    return {
+def _row(ablation: str, policy: str, **overrides: object) -> dict[str, object]:
+    base = {
+        "ablation": ablation,
+        "policy": policy,
         "execution_accuracy": 1.0,
         "tool_call_f1": 1.0,
         "schema_validity_rate": 1.0,
@@ -187,31 +189,101 @@ def _baseline() -> dict[str, object]:
         "ungrounded_answers_shipped": 0,
         "wrong_but_grounded": 0,
     }
+    base.update(overrides)
+    return base
+
+
+def _grid() -> list[dict[str, object]]:
+    """A baseline where the controls demonstrably bite."""
+    return [
+        _row("all_controls", "oracle"),
+        _row("all_controls", "naive", execution_accuracy=0.0),
+        _row("no_grounding", "naive", execution_accuracy=0.0, ungrounded_answers_shipped=25),
+        _row("no_metric_atoms", "naive", execution_accuracy=0.0, wrong_but_grounded=12),
+    ]
 
 
 def test_the_gate_passes_an_identical_run() -> None:
-    assert check_regression(_baseline(), _baseline()) == []
+    assert check_regression(_grid(), _grid()) == []
 
 
 def test_the_gate_tolerates_noise_in_accuracy() -> None:
-    current = dict(_baseline(), execution_accuracy=0.99)
-    assert check_regression(current, _baseline()) == []
+    current = _grid()
+    current[0]["execution_accuracy"] = 0.99
+    assert check_regression(current, _grid()) == []
+
+
+def test_the_gate_fails_a_real_accuracy_regression() -> None:
+    current = _grid()
+    current[0]["execution_accuracy"] = 0.90
+    assert check_regression(current, _grid())
 
 
 def test_the_gate_fails_a_single_ungrounded_answer() -> None:
     """Counters have zero tolerance. One fabricated number is not noise."""
-    current = dict(_baseline(), ungrounded_answers_shipped=1)
-    assert len(check_regression(current, _baseline())) == 1
+    current = _grid()
+    current[1]["ungrounded_answers_shipped"] = 1
+    assert len(check_regression(current, _grid())) == 1
+
+
+def test_the_gate_notices_when_the_grounding_gate_is_switched_off() -> None:
+    """docs/AUDIT.md, R2-1. The old gate compared only the oracle row and saw nothing.
+
+    Disabling the grounding gate makes `all_controls/naive` ship the same fabrications as
+    `no_grounding/naive`. Absolute comparison catches the rise; the differential catches the
+    case where the baseline was regenerated with the control already gone.
+    """
+    current = _grid()
+    current[1]["ungrounded_answers_shipped"] = 25  # all_controls now behaves like no_grounding
+    failures = check_regression(current, _grid())
+    assert failures
+    assert any("all_controls/naive.ungrounded_answers_shipped" in f for f in failures)
+
+
+def test_the_gate_fails_when_a_control_stops_biting() -> None:
+    """A control disabled *everywhere* passes every absolute check. Only the delta shows it."""
+    grid = _grid()
+    grid[1]["ungrounded_answers_shipped"] = 25
+    grid[2]["ungrounded_answers_shipped"] = 25
+    failures = check_regression(grid, grid)  # compared against itself: absolutes all pass
+    assert any("control not biting" in f for f in failures)
 
 
 def test_the_gate_fails_any_drop_in_injection_block_rate() -> None:
-    current = dict(_baseline(), injection_block_rate=0.99)
-    assert check_regression(current, _baseline())
+    current = _grid()
+    current[0]["injection_block_rate"] = 0.99
+    assert check_regression(current, _grid())
 
 
-def test_the_gate_fails_a_real_accuracy_regression() -> None:
-    current = dict(_baseline(), execution_accuracy=0.90)
-    assert check_regression(current, _baseline())
+def test_a_missing_baseline_row_is_a_failure_not_a_pass() -> None:
+    assert check_regression(_grid(), _grid()[:2])
+
+
+# ------------------------------------- ablations must isolate exactly one control
+
+
+def test_the_star_rule_and_the_metric_atom_rule_are_separate_dimensions() -> None:
+    """docs/AUDIT.md, R2-2. `allow_star` used to be derived from `metric_atoms`.
+
+    One ablation switched off two rules, and the report blamed a three-case drop on one of
+    them. An ablation that moves two things measures neither.
+    """
+    assert Ablation("x", metric_atoms=False).star_check is True
+    assert Ablation("y", star_check=False).metric_atoms is True
+
+
+def test_only_invented_metric_cases_escape_when_the_metric_atom_rule_is_removed() -> None:
+    runner = EvalRunner(ablation=Ablation("no_metric_atoms", metric_atoms=False))
+    report = runner.run_suite([], load_adversarial())
+    escaped = {r.vector for r in report.adversarial if not r.blocked}
+    assert escaped == {"invented_metric"}
+
+
+def test_removing_only_the_star_rule_lets_exactly_the_select_star_case_through() -> None:
+    runner = EvalRunner(ablation=Ablation("no_star_check", star_check=False))
+    report = runner.run_suite([], load_adversarial())
+    escaped = [r.case_id for r in report.adversarial if not r.blocked]
+    assert escaped == ["adv12"]
 
 
 # ----------------------------------------------- the sandbox inherits no secrets

@@ -34,7 +34,7 @@ fixed one.
 | clarification precision | 1.000 | ≥ 0.80 |
 | clarification recall | 1.000 | ≥ 0.80 |
 | injection block rate | 1.000 | 1.000 |
-| p50 latency (ms) | 3.430 | — |
+| p50 latency (ms) | 3.840 | — |
 
 ## Ablations: what each control is worth
 
@@ -45,8 +45,9 @@ difference is which controls are switched on.
 |---|---:|---:|---:|---:|
 | `all_controls` | 0 | 0 | 0 | 1.000 |
 | `no_grounding` | 25 | 25 | 0 | 1.000 |
-| `no_metric_atoms` | 12 | 0 | 12 | 0.750 |
+| `no_metric_atoms` | 12 | 0 | 12 | 0.833 |
 | `no_semantic_layer` | 0 | 0 | 0 | 1.000 |
+| `no_star_check` | 0 | 0 | 0 | 0.917 |
 | `nothing_but_sql` | 25 | 13 | 12 | 0.750 |
 
 ### Reading this table

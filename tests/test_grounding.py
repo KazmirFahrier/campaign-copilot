@@ -61,9 +61,17 @@ def test_small_integers_and_years_are_prose_not_claims() -> None:
 
 
 def test_numbers_the_user_supplied_are_grounded_by_the_question() -> None:
-    """A question that names a 2.5x threshold licenses the agent to repeat 2.5."""
-    report = CHECKER.check("Two campaigns beat 2.5x ROAS.", facts=[], context_numbers=[2.5])
+    """A 2.5x threshold licenses the agent to repeat 2.5 -- once it has actually run a query.
+
+    This test used to pass `facts=[]` with no `queries_run`, and passed. That is the
+    leading-question hole: with no query at all, the user's own number came back as an
+    assertion (docs/AUDIT.md, R2-4).
+    """
+    report = CHECKER.check(
+        "Two campaigns beat 2.5x ROAS.", facts=[], context_numbers=[2.5], queries_run=True
+    )
     assert report.ok
+    assert [c.raw for c in report.context_only] == ["2.5"]
 
 
 # ---------------------------------------------------------- the strict half
@@ -118,3 +126,34 @@ def test_nan_facts_do_not_crash() -> None:
 
 def test_a_finite_fact_still_grounds_alongside_non_finite_ones() -> None:
     assert CHECKER.check("ROAS was 9.70.", facts=[float("inf"), 9.7013]).ok
+
+
+# ------------------------------------------- a question is not a source of facts
+
+
+def test_a_leading_question_cannot_launder_a_number_into_an_answer() -> None:
+    """docs/AUDIT.md, R2-4. The gate used to accept this.
+
+    The user supplies the figure, the agent runs nothing, and the agent asserts it back.
+    """
+    report = CHECKER.check(
+        "Yes. Revenue was $412,000.", facts=[], context_numbers=[412000.0], queries_run=False
+    )
+    assert not report.ok
+    assert [c.raw for c in report.ungrounded] == ["$412,000"]
+
+
+def test_a_threshold_from_the_question_is_still_repeatable_once_a_query_has_run() -> None:
+    report = CHECKER.check(
+        "No campaign beat 2.5x ROAS.", facts=[], context_numbers=[2.5], queries_run=True
+    )
+    assert report.ok
+    assert [c.raw for c in report.context_only] == ["2.5"]
+
+
+def test_claims_grounded_by_a_query_are_not_marked_context_only() -> None:
+    report = CHECKER.check(
+        "ROAS was 9.70.", facts=[9.7013], context_numbers=[9.7], queries_run=True
+    )
+    assert report.ok
+    assert report.context_only == ()

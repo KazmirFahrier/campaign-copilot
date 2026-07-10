@@ -187,7 +187,9 @@ def build_weekly_review(
     review.narrative = _narrative(review, best)
 
     # The same gate the agent uses, on the same numbers, with the same class.
-    report = (checker or GroundingChecker()).check(review.narrative, figures.facts())
+    report = (checker or GroundingChecker()).check(
+        review.narrative, figures.facts(), queries_run=True
+    )
     if not report.ok:
         raise ProvenanceError(
             "The narrative states numbers no figure supports: "

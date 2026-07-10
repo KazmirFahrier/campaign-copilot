@@ -51,7 +51,12 @@ class _NullChecker(GroundingChecker):
     """The grounding gate, removed. Used only to measure what it was worth."""
 
     def check(
-        self, answer: str, facts: list[float], *, context_numbers: list[float] | None = None
+        self,
+        answer: str,
+        facts: list[float],
+        *,
+        context_numbers: list[float] | None = None,
+        queries_run: bool = False,
     ) -> GroundingReport:
         """Approve everything."""
         return GroundingReport(ok=True)
@@ -59,12 +64,20 @@ class _NullChecker(GroundingChecker):
 
 @dataclass(frozen=True, slots=True)
 class Ablation:
-    """Which controls are switched on for a run."""
+    """Which controls are switched on for a run.
+
+    One field per control. `allow_star` used to be derived from `metric_atoms`, so the
+    `no_metric_atoms` row disabled two rules at once and the report attributed a three-case
+    drop in injection block rate entirely to the metric-atom rule -- when one of the three was
+    the `SELECT *` rule (docs/AUDIT.md, R2-2). An ablation that moves two things measures
+    neither.
+    """
 
     name: str = "all_controls"
     grounding: bool = True
     metric_atoms: bool = True
     semantic_layer: bool = True
+    star_check: bool = True
 
 
 @dataclass
@@ -268,7 +281,7 @@ class EvalRunner:
             SqlGuardConfig(
                 allowed_aggregates=self.layer.aggregate_atoms(),
                 require_registered_aggregates=self.ablation.metric_atoms,
-                allow_star=not self.ablation.metric_atoms,
+                allow_star=not self.ablation.star_check,
             )
         )
 
@@ -325,6 +338,7 @@ class EvalRunner:
             result.answer,
             facts,
             context_numbers=[float(c.value) for c in extract_numbers(case.question)],
+            queries_run=any(s.ok and s.tool for s in result.trace.steps),
         )
         shipped = result.ok and not result.needs_clarification
 

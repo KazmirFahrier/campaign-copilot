@@ -14,8 +14,9 @@ layer, executing it in a sandbox, and refusing to state a number it cannot trace
 > in CI. **No `terraform apply` has been run and there is no live URL** —
 > [`docs/deploy.md`](docs/deploy.md) states exactly what is verified and what is not. See also
 > [`EVAL_REPORT.md`](EVAL_REPORT.md), [`docs/threat-model.md`](docs/threat-model.md), and
-> [`docs/AUDIT.md`](docs/AUDIT.md) — a self-audit that found twelve defects, including a false
-> claim in this project's own evaluation report. Ten are fixed; two are open and named.
+> [`docs/AUDIT.md`](docs/AUDIT.md) — two rounds of self-audit, twenty defects, including a
+> false claim in this project's own evaluation report and a regression gate that could not see
+> the control it existed to protect. Eighteen are fixed; two are open and named.
 
 ---
 
@@ -92,9 +93,12 @@ make warehouse     # generate 1M sessions, build staging + marts
 make check         # ruff + mypy --strict + pytest
 ```
 
-The warehouse is a build artifact and is **not committed**. `SEED = 20260709` makes
-`make warehouse` reproducible byte-for-byte. Committing the `.duckdb` file would be a
-claim of reproducibility that was never tested.
+The warehouse is a build artifact and is **not committed**. `SEED = 20260709` makes the
+generated *data* reproducible: two runs produce identical DataFrames, asserted by
+`test_generation_is_deterministic_given_the_seed`. The **file** is not byte-identical — DuckDB
+writes timestamps and page layout that differ between runs. An earlier version of this README
+claimed byte-for-byte reproducibility; it was never checked, and it is false
+(`docs/AUDIT.md`, R2-6). Commit the numbers you can reproduce, not the bytes you cannot.
 
 ## What the data is
 
@@ -274,9 +278,11 @@ computed the right thing.** Only the semantic layer can. That is the failure mod
 text-to-SQL agent that has an eval harness but no semantic layer, and it is invisible to the
 metrics those agents report.
 
-`make eval-gate` exits non-zero on any regression and runs in CI. Verified by mutation: silently
-neutering the metric-atom rule leaves the oracle at 1.000 and drops `injection_block_rate` to
-0.833, and the gate fails the build.
+`make eval-gate` exits non-zero on any regression and runs in CI. It compares **every row of the
+grid**, not just the oracle: the oracle never ships an ungrounded number, so a gate watching only
+its counters cannot notice the grounding gate being deleted — which is exactly what happened, and
+what `docs/AUDIT.md` R2-1 records. It also asserts that each control still *bites*: turning one
+off must make its failure counter rise, or the control is already gone.
 
 ## Reporting
 
