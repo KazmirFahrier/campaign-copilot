@@ -86,6 +86,7 @@ class Metric:
     grain: tuple[str, ...]
     unit: str
     ambiguity: str | None = None
+    table: str = DEFAULT_TABLE
 
     @property
     def is_ratio(self) -> bool:
@@ -105,6 +106,7 @@ class Dimension:
     type: str
     description: str
     ambiguity: str | None = None
+    table: str = DEFAULT_TABLE
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,6 +145,7 @@ class SemanticLayer:
                 grain=tuple(m.get("grain") or ()),
                 unit=m["unit"],
                 ambiguity=(m.get("ambiguity") or None) and str(m["ambiguity"]).strip(),
+                table=m.get("table", DEFAULT_TABLE),
             )
             for m in raw.get("metrics", [])
         }
@@ -152,6 +155,7 @@ class SemanticLayer:
                 type=d["type"],
                 description=str(d["description"]).strip(),
                 ambiguity=(d.get("ambiguity") or None) and str(d["ambiguity"]).strip(),
+                table=d.get("table", DEFAULT_TABLE),
             )
             for d in raw.get("dimensions", [])
         }
@@ -180,6 +184,51 @@ class SemanticLayer:
             return self.dimensions[name]
         except KeyError:
             raise UnknownDimensionError(name, self.dimensions) from None
+
+    def validate_against(self, schema: Mapping[str, Iterable[str]]) -> list[str]:
+        """Return every promise this layer makes that the warehouse cannot keep.
+
+        A dimension that exists in `metrics.yml` and in no mart is worse than a missing one:
+        the RAG corpus retrieves it, `list_metrics` advertises it, and the agent that uses it
+        gets an error about *grain* rather than about the column not existing.
+
+        ``schema`` maps a fully qualified table to its columns. It must cover every table any
+        metric or dimension binds to; a metric pointing at a mart nobody declared is itself a
+        problem. Run this in CI. An empty list is the only acceptable result.
+        """
+        import sqlglot
+        from sqlglot import exp
+
+        columns = {t: {c.lower() for c in cols} for t, cols in schema.items()}
+        problems: list[str] = []
+
+        for dim in self.dimensions.values():
+            if dim.table not in columns:
+                problems.append(f"dimension {dim.name!r} binds to unknown table {dim.table!r}")
+            elif dim.name.lower() not in columns[dim.table]:
+                problems.append(f"dimension {dim.name!r} is not a column of {dim.table}")
+
+        for metric in self.metrics.values():
+            if metric.table not in columns:
+                problems.append(
+                    f"metric {metric.name!r} binds to unknown table {metric.table!r}"
+                )
+                continue
+            tree = sqlglot.parse_one(f"select {metric.expression}", read="duckdb")
+            for column in tree.find_all(exp.Column):
+                if column.name.lower() not in columns[metric.table]:
+                    problems.append(
+                        f"metric {metric.name!r} references unknown column {column.name!r}"
+                    )
+            for grain in metric.grain:
+                if grain not in self.dimensions:
+                    problems.append(f"metric {metric.name!r} declares unknown grain {grain!r}")
+                elif self.dimensions[grain].table != metric.table:
+                    problems.append(
+                        f"metric {metric.name!r} declares grain {grain!r} from another table"
+                    )
+
+        return problems
 
     def aggregate_atoms(self) -> frozenset[str]:
         """Every aggregate sub-expression that any registered metric is built from.
@@ -230,24 +279,39 @@ class SemanticLayer:
         metrics: Sequence[str],
         dimensions: Sequence[str] = (),
         *,
-        table: str = DEFAULT_TABLE,
+        table: str | None = None,
         filters: Sequence[str] = (),
+        having: Sequence[str] = (),
         order_by: str | None = None,
         descending: bool = True,
         limit: int | None = 100,
     ) -> str:
         """Compile a metric request into DuckDB SQL.
 
-        Every metric is validated against the registry and every dimension against the
-        metric's declared grain, so a request for ``blended_roas by campaign_name``
-        fails loudly instead of returning a plausible, wrong number.
+        The table is derived from the metrics, not passed in: a metric knows which mart it
+        lives on. Mixing metrics from two marts in one request is an error rather than a
+        silent cross join.
+
+        ``filters`` are applied before aggregation, ``having`` after. "Which channels beat
+        1.0x ROAS" is a HAVING; expressing it as a WHERE is how you get a wrong answer that
+        looks right.
         """
         if not metrics:
             raise SemanticError("At least one metric is required.")
 
         resolved = [self.metric(m) for m in metrics]
-        for d in dimensions:
-            self.dimension(d)
+
+        tables = {m.table for m in resolved}
+        if len(tables) > 1:
+            raise SemanticError(
+                f"Metrics span multiple tables {sorted(tables)}. Query them separately."
+            )
+        target = table or next(iter(tables))
+
+        for name in dimensions:
+            dim = self.dimension(name)
+            if dim.table != target:
+                raise SemanticError(f"Dimension {name!r} belongs to {dim.table}, not {target}.")
 
         for m in resolved:
             illegal = [d for d in dimensions if m.grain and d not in m.grain]
@@ -259,12 +323,20 @@ class SemanticLayer:
                 )
 
         select_parts = [*dimensions, *(m.select_sql() for m in resolved)]
-        sql = f"select {', '.join(select_parts)}\nfrom {table}"
+        sql = f"select {', '.join(select_parts)}\nfrom {target}"
 
         if filters:
             sql += "\nwhere " + "\n  and ".join(f"({f})" for f in filters)
         if dimensions:
             sql += "\ngroup by " + ", ".join(str(i + 1) for i in range(len(dimensions)))
+        if having:
+            known = {m.name for m in resolved}
+            for clause in having:
+                if not any(name in clause for name in known):
+                    raise SemanticError(
+                        f"HAVING clause {clause!r} references no selected metric."
+                    )
+            sql += "\nhaving " + "\n  and ".join(f"({h})" for h in having)
         if order_by:
             if order_by not in {*dimensions, *(m.name for m in resolved)}:
                 raise SemanticError(

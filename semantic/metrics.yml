@@ -113,6 +113,36 @@ metrics:
     unit: usd
     ambiguity: null
 
+  - name: lifetime_revenue
+    label: Lifetime revenue
+    table: main_marts.customer_ltv
+    description: >
+      Total revenue attributed to acquired customers across their whole history, not just
+      the order that acquired them. Registered so that questions about the LTV mart do not
+      have to route around the guardrail.
+    expression: sum(lifetime_revenue_usd)
+    grain: [acquisition_channel, acquisition_campaign]
+    unit: usd
+    ambiguity: null
+
+  - name: customers
+    label: Customers
+    table: main_marts.customer_ltv
+    description: Distinct acquired customers.
+    expression: count(customer_id)
+    grain: [acquisition_channel, acquisition_campaign]
+    unit: count
+    ambiguity: null
+
+  - name: avg_ltv
+    label: Average lifetime value
+    table: main_marts.customer_ltv
+    description: Lifetime revenue per acquired customer. A ratio of sums, as always.
+    expression: sum(lifetime_revenue_usd) / nullif(count(customer_id), 0)
+    grain: [acquisition_channel, acquisition_campaign]
+    unit: usd
+    ambiguity: null
+
 dimensions:
   - name: event_date
     type: date
@@ -134,12 +164,15 @@ dimensions:
       Branded clicks largely cannibalise organic demand, so analysts routinely exclude
       them when judging incrementality. A filter on channel that does not say whether
       brand is in or out is ambiguous. Grouping BY channel is not: the split is visible.
-  - name: device_category
+
+  - name: acquisition_channel
     type: string
-    description: One of desktop, mobile, tablet.
-  - name: country
+    table: main_marts.customer_ltv
+    description: The channel that acquired the customer, fixed at first order.
+  - name: acquisition_campaign
     type: string
-    description: Session country.
+    table: main_marts.customer_ltv
+    description: The campaign that acquired the customer, fixed at first order.
 
 conventions:
   default_date_range: last_28_days

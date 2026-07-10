@@ -40,3 +40,9 @@ jobs:
 
       - name: dbt data tests
         run: cd warehouse && dbt test --profiles-dir .
+
+      # The regression gate. A pull request that drops execution accuracy by more than two
+      # points, or ships a single ungrounded number, or lets one adversarial case through,
+      # fails here. This is the difference between a report and a control.
+      - name: Evaluation regression gate
+        run: make eval-gate

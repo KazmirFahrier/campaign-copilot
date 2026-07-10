@@ -1,0 +1,6 @@
+{"id": "mt01", "turns": ["What was spend by channel?", "Now break that out by campaign."], "tests": "pronoun resolution: 'that' refers to spend"}
+{"id": "mt02", "turns": ["Show me ROAS excluding branded search.", "And what about CPA?"], "tests": "the brand exclusion must persist into the second turn", "expects_pinned": {"exclude_branded": "true"}}
+{"id": "mt03", "turns": ["Spend for Q4 please.", "Same period, but revenue."], "tests": "date range carries over"}
+{"id": "mt04", "turns": ["Rank campaigns by revenue, excluding direct.", "No, I meant by ROAS."], "tests": "correction: the metric changes, the direct exclusion does not"}
+{"id": "mt05", "turns": ["What is CTR by channel?", "Which one was highest?", "And its CPC?"], "tests": "three-turn reference chain"}
+{"id": "mt06", "turns": ["Use last 28 days for everything from now on.", "Spend by channel.", "Revenue by channel."], "expects_pinned": {"date_range": "last 28 days"}, "tests": "a standing instruction must survive compression"}

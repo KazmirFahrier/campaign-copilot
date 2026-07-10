@@ -124,9 +124,17 @@ class ToolResult:
 
 @runtime_checkable
 class Tool(Protocol):
-    """Anything the agent may call."""
+    """Anything the agent may call.
 
-    spec: ToolSpec
+    ``spec`` is a read-only property rather than an instance attribute so that a tool can
+    declare it as a `ClassVar` -- which is what it is, metadata about the class -- and so
+    that a wrapper (the eval recorder) can delegate it.
+    """
+
+    @property
+    def spec(self) -> ToolSpec:
+        """Describe the tool to the model."""
+        ...
 
     def run(self, **kwargs: Any) -> ToolResult:
         """Execute the tool. Must not raise for expected failures."""

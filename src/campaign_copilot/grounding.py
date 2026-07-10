@@ -25,6 +25,7 @@ Everything else is ungrounded and the answer does not ship.
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
@@ -112,8 +113,11 @@ class GroundingChecker:
             facts: Every number any tool returned this turn.
             context_numbers: Numbers the user supplied. The agent may repeat these.
         """
-        licensed = [Decimal(str(f)) for f in facts]
-        licensed += [Decimal(str(c)) for c in (context_numbers or [])]
+        # A division by zero in the *agent's* query yields inf, and 0/0 yields nan. Both
+        # arrive here as facts, and Decimal arithmetic on them raises InvalidOperation.
+        # Dropping them is correct as well as safe: an infinite ROAS licenses no claim.
+        licensed = [Decimal(str(f)) for f in facts if math.isfinite(f)]
+        licensed += [Decimal(str(c)) for c in (context_numbers or []) if math.isfinite(c)]
 
         ungrounded: list[Claim] = []
         claims = extract_numbers(answer)

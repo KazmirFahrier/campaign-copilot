@@ -8,11 +8,12 @@ layer, executing it in a sandbox, and refusing to state a number it cannot trace
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-> **Status: Phases 0-3 complete.** Warehouse, semantic layer, SQL guardrail, LLM core,
-> tools, grounding checker, agent loop, and hybrid RAG with injection controls are built
-> and tested (149 tests, 92% branch coverage, `mypy --strict`, `docs/threat-model.md`).
-> The evaluation harness and deployment are not. This README describes what exists; the
-> roadmap at the bottom describes what does not. Nothing here claims to be finished.
+> **Status: Phases 0-4 complete.** Warehouse, semantic layer, SQL guardrail, LLM core,
+> tools, grounding checker, agent loop, hybrid RAG with injection controls, and the
+> evaluation harness with a CI regression gate (185 tests, 89% branch coverage,
+> `mypy --strict`). See [`EVAL_REPORT.md`](EVAL_REPORT.md) and
+> [`docs/threat-model.md`](docs/threat-model.md). Document automation and deployment are
+> not built. Nothing here claims to be finished.
 
 ---
 
@@ -243,6 +244,38 @@ agent to state 4.2. That closes the RAG laundering path, where a stale or attack
 number in prose is re-emitted as a fresh, confident answer. There is an end-to-end test where
 the agent retrieves exactly that memo, tries to answer `4.2x` twice, and is refused both times.
 
+## Evaluation
+
+[`EVAL_REPORT.md`](EVAL_REPORT.md). Every number is reproducible offline with `make eval` —
+no API key, under a second. The model is replaced by a deterministic **policy**; everything
+else is the real system.
+
+The `oracle` policy scores **1.000 on every metric**, and that is the point: an oracle that
+cannot reach the ceiling means the harness is measuring itself. Getting there found five real
+defects, including a guardrail that rejected a legitimate query against the `customer_ltv`
+mart because the metric registry only ever described one table.
+
+Then the same **naive** policy — one that writes `avg(revenue/spend)`, never clarifies, and
+guesses when rejected — is run through the same 25 questions with controls switched off:
+
+| controls | answers shipped | ungrounded shipped | wrong but grounded |
+|---|---:|---:|---:|
+| `all_controls` | 0 | 0 | 0 |
+| `no_grounding` | 25 | **25** | 0 |
+| `no_metric_atoms` | 12 | 0 | **12** |
+| `nothing_but_sql` | 25 | **13** | **12** |
+
+`no_metric_atoms` is the row worth staring at. Twelve answers ship. Every number in them is
+traceable to a query that really ran, so the grounding gate passes. Every one of them is
+wrong. **Grounding asks whether a query produced the figure; it cannot ask whether the query
+computed the right thing.** Only the semantic layer can. That is the failure mode of every
+text-to-SQL agent that has an eval harness but no semantic layer, and it is invisible to the
+metrics those agents report.
+
+`make eval-gate` exits non-zero on any regression and runs in CI. Verified by mutation: silently
+neutering the metric-atom rule leaves the oracle at 1.000 and drops `injection_block_rate` to
+0.833, and the gate fails the build.
+
 ## Roadmap
 
 | Phase | Scope | Status |
@@ -251,7 +284,7 @@ the agent retrieves exactly that memo, tries to answer `4.2x` twice, and is refu
 | 1 | LLM core: provider adapters, structured outputs, token budget, multi-turn memory | ✅ done |
 | 2 | Agent loop + tool servers (SQL, sandboxed Python) | ✅ done |
 | 3 | Hybrid RAG over schema and metric docs, grounded citations | ✅ done |
-| 4 | **Evaluation harness** — golden SQL, multi-turn regression, κ-validated LLM judge | ⬜ |
+| 4 | **Evaluation harness** — golden SQL, ablations, CI regression gate | ✅ done (κ study unrun) |
 | 5 | Document automation (Docs/Slides API weekly report) | ⬜ |
 | 6 | Cloud Run deploy, Terraform, TypeScript streaming UI | ⬜ |
 

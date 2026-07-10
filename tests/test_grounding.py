@@ -101,3 +101,20 @@ def test_an_answer_with_no_numbers_is_trivially_grounded() -> None:
 
 def test_a_percentage_claim_is_not_grounded_by_an_unrelated_fraction() -> None:
     assert not CHECKER.check("CTR was 3.8%.", facts=[0.052]).ok
+
+
+# ------------------------------------------------------- non-finite facts
+
+
+def test_infinite_facts_do_not_crash_and_license_nothing() -> None:
+    """An unguarded `avg(revenue/spend)` returns inf when spend is zero. It reaches here."""
+    report = CHECKER.check("ROAS was 9.70.", facts=[float("inf"), float("-inf")])
+    assert not report.ok
+
+
+def test_nan_facts_do_not_crash() -> None:
+    assert not CHECKER.check("ROAS was 9.70.", facts=[float("nan")]).ok
+
+
+def test_a_finite_fact_still_grounds_alongside_non_finite_ones() -> None:
+    assert CHECKER.check("ROAS was 9.70.", facts=[float("inf"), 9.7013]).ok

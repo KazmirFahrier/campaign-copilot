@@ -141,3 +141,31 @@ def test_aggregate_atoms_exclude_any_averaged_ratio(layer: SemanticLayer) -> Non
     assert "sum(revenue_usd)" in atoms
     assert "sum(spend_usd)" in atoms
     assert not any(a.startswith("avg(") for a in atoms)
+
+
+# ------------------------------------------------ the layer must describe a real warehouse
+
+
+def test_the_semantic_layer_keeps_every_promise_it_makes(layer: SemanticLayer, con) -> None:
+    """A declared dimension that exists in no mart is retrievable, advertised, and unusable.
+
+    It fails with a message about *grain*, which sends the agent looking in the wrong place.
+    This lint is the reason `country` and `device_category` are no longer declared.
+    """
+    schema = {
+        f"main_marts.{table}": [
+            r[0]
+            for r in con.execute(
+                f"select column_name from duckdb_columns() where table_name = '{table}'"
+            ).fetchall()
+        ]
+        for table in ("campaign_performance_daily", "customer_ltv", "channel_attribution")
+    }
+    assert layer.validate_against(schema) == []
+
+
+def test_the_lint_actually_catches_a_broken_layer(layer: SemanticLayer) -> None:
+    problems = layer.validate_against({"main_marts.campaign_performance_daily": ["event_date"]})
+    assert any("is not a column of" in p for p in problems)
+    assert any("references unknown column" in p for p in problems)
+    assert any("binds to unknown table" in p for p in problems), "the LTV mart is undeclared"

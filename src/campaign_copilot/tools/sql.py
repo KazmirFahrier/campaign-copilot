@@ -129,7 +129,16 @@ class QueryMetricsTool:
                 "filters": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "SQL boolean expressions, e.g. \"channel <> 'direct'\".",
+                    "description": (
+                        "Pre-aggregation SQL predicates, e.g. \"channel <> 'direct'\"."
+                    ),
+                },
+                "having": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        'Post-aggregation predicates on metric names, e.g. "roas > 1.0".'
+                    ),
                 },
                 "order_by": {"type": "string"},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 10000},
@@ -148,6 +157,7 @@ class QueryMetricsTool:
                 metrics,
                 dimensions,
                 filters=filters,
+                having=kwargs.get("having", []) or [],
                 order_by=kwargs.get("order_by"),
                 limit=kwargs.get("limit", 100),
             )
