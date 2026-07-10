@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -17,6 +18,7 @@ from campaign_copilot.tools import (
     ToolResult,
     Warehouse,
 )
+from campaign_copilot.tools.python_exec import session_scope
 
 DB = Path(__file__).resolve().parents[1] / "warehouse" / "campaign_copilot.duckdb"
 TABLE = "main_marts.campaign_performance_daily"
@@ -148,59 +150,68 @@ def sandbox() -> PythonSandbox:
     return PythonSandbox(config=SandboxConfig(timeout_seconds=5, cpu_seconds=5, memory_mb=256))
 
 
+def _in_session(session_id: str, sandbox: PythonSandbox, **kwargs: Any) -> ToolResult:
+    """Run a cell as a given session. The scope is server state; the model cannot set it."""
+    token = session_scope.set(session_id)
+    try:
+        return sandbox.run(**kwargs)
+    finally:
+        session_scope.reset(token)
+
+
 def test_sandbox_captures_stdout(sandbox: PythonSandbox) -> None:
-    result = sandbox.run(code="print(6 * 7)", session_id="a")
+    result = _in_session("a", sandbox, code="print(6 * 7)")
     assert result.ok
     assert result.data["stdout"].strip() == "42"
 
 
 def test_sandbox_state_persists_across_calls(sandbox: PythonSandbox) -> None:
     """A follow-up of "now plot that" only works if `that` is still in scope."""
-    sandbox.run(code="rows = [1, 2, 3]", session_id="b")
-    result = sandbox.run(code="print(sum(rows))", session_id="b")
+    _in_session("b", sandbox, code="rows = [1, 2, 3]")
+    result = _in_session("b", sandbox, code="print(sum(rows))")
     assert result.data["stdout"].strip() == "6"
 
 
 def test_sessions_are_isolated_from_each_other(sandbox: PythonSandbox) -> None:
-    sandbox.run(code="secret = 1", session_id="c")
-    result = sandbox.run(code="print(secret)", session_id="d")
+    _in_session("c", sandbox, code="secret = 1")
+    result = _in_session("d", sandbox, code="print(secret)")
     assert not result.ok
     assert "NameError" in result.content
 
 
 def test_reset_clears_a_session(sandbox: PythonSandbox) -> None:
-    sandbox.run(code="v = 1", session_id="e")
+    _in_session("e", sandbox, code="v = 1")
     sandbox.reset("e")
-    assert not sandbox.run(code="print(v)", session_id="e").ok
+    assert not _in_session("e", sandbox, code="print(v)").ok
 
 
 def test_a_runaway_loop_is_killed(sandbox: PythonSandbox) -> None:
-    result = sandbox.run(code="while True:\n    pass", session_id="f")
+    result = _in_session("f", sandbox, code="while True:\n    pass")
     assert not result.ok
     assert result.error_code == "TIMEOUT"
 
 
 def test_a_memory_bomb_does_not_take_down_the_agent(sandbox: PythonSandbox) -> None:
-    result = sandbox.run(code="x = bytearray(10**10)", session_id="g")
+    result = _in_session("g", sandbox, code="x = bytearray(10**10)")
     assert not result.ok
     assert result.error_code in {"EXECUTION_ERROR", "MEMORY_OR_CRASH"}
 
 
 def test_network_access_is_denied(sandbox: PythonSandbox) -> None:
     """Best-effort, and documented as such. It stops the accidental call, not an attacker."""
-    result = sandbox.run(code="import socket; socket.socket()", session_id="h")
+    result = _in_session("h", sandbox, code="import socket; socket.socket()")
     assert not result.ok
     assert "PermissionError" in result.content
 
 
 def test_subprocess_spawning_is_denied(sandbox: PythonSandbox) -> None:
-    result = sandbox.run(code="import subprocess; subprocess.run(['ls'])", session_id="i")
+    result = _in_session("i", sandbox, code="import subprocess; subprocess.run(['ls'])")
     assert not result.ok
     assert "PermissionError" in result.content
 
 
 def test_a_traceback_is_returned_for_the_model_to_repair(sandbox: PythonSandbox) -> None:
-    result = sandbox.run(code="1 / 0", session_id="j")
+    result = _in_session("j", sandbox, code="1 / 0")
     assert not result.ok
     assert result.error_code == "EXECUTION_ERROR"
     assert "ZeroDivisionError" in result.content
@@ -208,7 +219,7 @@ def test_a_traceback_is_returned_for_the_model_to_repair(sandbox: PythonSandbox)
 
 def test_unpicklable_names_are_dropped_and_reported(sandbox: PythonSandbox) -> None:
     """Losing a name silently would make the next turn fail for no visible reason."""
-    result = sandbox.run(code="keep = 1\ngen = (i for i in range(3))", session_id="k")
+    result = _in_session("k", sandbox, code="keep = 1\ngen = (i for i in range(3))")
     assert result.ok
     assert "gen" in result.data["dropped"]
     assert "keep" in result.data["variables"]
@@ -216,4 +227,27 @@ def test_unpicklable_names_are_dropped_and_reported(sandbox: PythonSandbox) -> N
 
 
 def test_empty_code_is_rejected(sandbox: PythonSandbox) -> None:
-    assert sandbox.run(code="   ", session_id="l").error_code == "EMPTY_CODE"
+    assert _in_session("l", sandbox, code="   ").error_code == "EMPTY_CODE"
+
+
+def test_the_model_cannot_choose_which_session_it_executes_in(sandbox: PythonSandbox) -> None:
+    """The vulnerability from docs/AUDIT.md, P1-4.
+
+    `session_id` used to be an argument in the tool's input schema, which put it in the
+    model's action space: a persuaded agent could name another user's session and read their
+    variables. It is now read from a ContextVar the server sets, and a model that passes it
+    anyway is ignored.
+    """
+    assert "session_id" not in PythonSandbox.spec.input_schema["properties"]
+
+    _in_session("alice", sandbox, code="password = 'hunter2'")
+
+    # A model emitting `session_id="alice"` while the server says "mallory".
+    token = session_scope.set("mallory")
+    try:
+        stolen = sandbox.run(code="print(password)", session_id="alice")
+    finally:
+        session_scope.reset(token)
+
+    assert not stolen.ok
+    assert "NameError" in stolen.content

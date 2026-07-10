@@ -15,10 +15,28 @@ from __future__ import annotations
 import builtins
 import contextlib
 import io
+import os
 import pickle
 import sys
 import traceback
 from typing import Any
+
+
+def _apply_limits() -> None:
+    """Apply rlimits to this (single-threaded, post-exec) process.
+
+    This used to run in the parent's ``preexec_fn``, between fork() and exec(), which the
+    stdlib documents as unsafe in a threaded process. Here it is ordinary Python.
+    """
+    import resource
+
+    mem = int(os.environ.get("CC_MEMORY_MB", "768")) * 1024 * 1024
+    cpu = int(os.environ.get("CC_CPU_SECONDS", "10"))
+    fsize = int(os.environ.get("CC_MAX_FILE_BYTES", str(8 * 1024 * 1024)))
+    resource.setrlimit(resource.RLIMIT_AS, (mem, mem))
+    resource.setrlimit(resource.RLIMIT_CPU, (cpu, cpu))
+    resource.setrlimit(resource.RLIMIT_FSIZE, (fsize, fsize))
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
 
 
 def _deny(*_args: Any, **_kwargs: Any) -> None:
@@ -65,6 +83,7 @@ def main() -> int:
     namespace: dict[str, Any] = dict(payload["namespace"])
     namespace.setdefault("__name__", "__cell__")
 
+    _apply_limits()
     _neutralize()
 
     stdout = io.StringIO()

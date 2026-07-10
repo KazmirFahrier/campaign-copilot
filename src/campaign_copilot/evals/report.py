@@ -189,12 +189,13 @@ def render_report(rows: list[dict[str, Any]]) -> str:
         "",
         "- **A score for a real model.** Needs a key. `make eval-live` runs the same suite",
         "  against Anthropic or OpenAI and writes the same JSON.",
-        "- **A validated LLM judge.** `cohens_kappa` is implemented and unit-tested against",
-        "  hand-worked examples, and the judge is written, but the agreement "
-        "study has not been",
-        "  run: it requires human labels on 150 responses and a model to compare them against.",
-        "  Reporting a judge's score without its kappa would be reporting a number whose",
-        "  reliability is unknown, which is the specific thing this project exists not to do.",
+        "- **An LLM judge, of any kind.** `cohens_kappa` is implemented and unit-tested",
+        "  against hand-worked examples. There is no judge for it to validate: no `judge.py`",
+        "  exists. An earlier version of this report asserted that one was written. It was",
+        "  not, and a self-audit caught the claim (`docs/AUDIT.md`, P0-1). A judge without a",
+        "  kappa study reports a number of unknown reliability, which is the specific thing",
+        "  this project exists not to do. A report that claims a judge it does not have is",
+        "  worse, and it was in this file.",
         "- **Multi-turn scores.** `evals/datasets/multi_turn.jsonl` has 6 "
         "conversations and the",
         "  memory tests cover the mechanics, but the conversations are not yet "

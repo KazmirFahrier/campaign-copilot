@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -75,6 +75,12 @@ _UNGROUNDED = (
     "I ran the queries but could not produce an answer whose numbers all come from them. "
     "Rather than state a figure I cannot support, I am stopping. The unsupported values "
     "were: {offenders}."
+)
+
+_SUMMARY_PROMPT = (
+    "Summarise the conversation so far in under 120 words. Preserve every constraint the "
+    "user stated (date ranges, exclusions, definitions) verbatim. Preserve no numbers: they "
+    "will be recomputed. Write prose, not a list."
 )
 
 _BUDGET = (
@@ -202,6 +208,25 @@ class Agent:
         self.max_grounding_retries = max_grounding_retries
         self._generator = StructuredGenerator(client)
 
+    def _summarize(self, messages: Sequence[Message]) -> str:
+        """Compress old turns with the model, falling back to truncation if it fails.
+
+        A summariser that raises must not lose the conversation. The fallback keeps the user's
+        own words, because those are the ones carrying the constraints.
+        """
+        transcript = "\n".join(f"{m.role}: {m.content}" for m in messages)
+        try:
+            response = self.client.complete(
+                [Message(role="user", content=transcript)],
+                system=_SUMMARY_PROMPT,
+                max_tokens=256,
+            )
+        except Exception:
+            logger.exception("summarisation failed; falling back to truncation")
+            said = [m.content for m in messages if m.role == "user"]
+            return "Earlier, the user asked: " + " | ".join(said[-6:])
+        return response.text.strip()
+
     # ------------------------------------------------------------------ prompts
 
     def _tool_catalog(self) -> str:
@@ -231,6 +256,13 @@ class Agent:
         emit = _safe_emitter(on_event)
         emit({"type": "start", "question": question})
         self.memory.add(Message(role="user", content=question))
+
+        # Compression used to be dead code: written, tested, and called by nothing, so a long
+        # conversation evicted its oldest turns one at a time until ContextOverflowError and
+        # the "rolling summary" never rolled (docs/AUDIT.md, P1-6).
+        if self.memory.needs_compression:
+            folded = self.memory.compress(self._summarize)
+            emit({"type": "compressed", "turns": folded})
         trace = AgentTrace(prompt_fingerprint=self.prompts.fingerprint())
 
         context_numbers = [float(c.value) for c in extract_numbers(question)]

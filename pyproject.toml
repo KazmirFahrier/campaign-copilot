@@ -24,7 +24,7 @@ dependencies = [
 [project.optional-dependencies]
 warehouse = ["dbt-core>=1.8", "dbt-duckdb>=1.8"]
 reporting = ["python-pptx>=1.0"]
-service = ["fastapi>=0.110", "uvicorn[standard]>=0.30", "httpx>=0.27"]
+service = ["fastapi>=0.110", "uvicorn[standard]>=0.30", "httpx>=0.27", "google-auth>=2.0"]
 google = ["google-api-python-client>=2.0", "google-auth>=2.0"]
 dev = [
     "pytest>=8.0",
@@ -79,7 +79,7 @@ ignore_missing_imports = true
 # install them, and the package must be usable without either. ScriptedClient is what
 # the test suite and the eval harness actually run against.
 [[tool.mypy.overrides]]
-module = ["anthropic.*", "openai.*", "tiktoken.*", "googleapiclient.*", "pptx.*"]
+module = ["anthropic.*", "openai.*", "tiktoken.*", "googleapiclient.*", "pptx.*", "google.*"]
 ignore_missing_imports = true
 
 # python-pptx ships a partial py.typed: CategoryChartData.add_series is untyped upstream.

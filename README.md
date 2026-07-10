@@ -8,12 +8,14 @@ layer, executing it in a sandbox, and refusing to state a number it cannot trace
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-> **Status: Phases 0-6 built; nothing is deployed.** 221 Python tests + 7 TypeScript tests,
+> **Status: Phases 0-6 built and audited; nothing is deployed.** 230 Python tests + 7 TypeScript tests,
 > `mypy --strict`, `tsc --strict`, `terraform validate`. The evaluation regression gate,
 > the report provenance check, the Terraform validation and the TypeScript typecheck all run
 > in CI. **No `terraform apply` has been run and there is no live URL** —
 > [`docs/deploy.md`](docs/deploy.md) states exactly what is verified and what is not. See also
-> [`EVAL_REPORT.md`](EVAL_REPORT.md) and [`docs/threat-model.md`](docs/threat-model.md).
+> [`EVAL_REPORT.md`](EVAL_REPORT.md), [`docs/threat-model.md`](docs/threat-model.md), and
+> [`docs/AUDIT.md`](docs/AUDIT.md) — a self-audit that found twelve defects, including a false
+> claim in this project's own evaluation report. Ten are fixed; two are open and named.
 
 ---
 

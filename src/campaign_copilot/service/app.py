@@ -26,8 +26,10 @@ import contextvars
 import json
 import logging
 import os
+import threading
 import time
 import uuid
+from collections import OrderedDict, deque
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -45,7 +47,7 @@ from campaign_copilot.llm.tokens import ContextBudget
 from campaign_copilot.memory import ConversationMemory
 from campaign_copilot.rag import HybridRetriever, build_corpus
 from campaign_copilot.semantic.layer import SemanticLayer
-from campaign_copilot.tools.python_exec import PythonSandbox, SandboxConfig
+from campaign_copilot.tools.python_exec import PythonSandbox, SandboxConfig, session_scope
 from campaign_copilot.tools.retrieve import SearchDocsTool
 from campaign_copilot.tools.sql import ListMetricsTool, QueryMetricsTool, RunSqlTool, Warehouse
 
@@ -85,13 +87,31 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True, slots=True)
 class Settings:
-    """Everything the service reads from its environment, in one place."""
+    """Everything the service reads from its environment, in one place.
 
-    warehouse_path: Path = Path(os.getenv("CC_WAREHOUSE", "warehouse/campaign_copilot.duckdb"))
-    executor_url: str | None = os.getenv("CC_EXECUTOR_URL") or None
-    model: str = os.getenv("CC_MODEL", "claude-sonnet-4-5")
-    max_steps: int = int(os.getenv("CC_MAX_STEPS", "8"))
-    context_window: int = int(os.getenv("CC_CONTEXT_WINDOW", "180000"))
+    Every default is a `default_factory`. A bare ``os.getenv(...)`` default is evaluated once,
+    when the class body runs, so every ``Settings()`` returns the environment as it was at
+    import time -- which is invisible in Cloud Run and maddening everywhere else
+    (docs/AUDIT.md, P2-7).
+    """
+
+    warehouse_path: Path = field(
+        default_factory=lambda: Path(
+            os.getenv("CC_WAREHOUSE", "warehouse/campaign_copilot.duckdb")
+        )
+    )
+    executor_url: str | None = field(
+        default_factory=lambda: os.getenv("CC_EXECUTOR_URL") or None
+    )
+    executor_audience: str | None = field(
+        default_factory=lambda: os.getenv("CC_EXECUTOR_AUDIENCE") or None
+    )
+    model: str = field(default_factory=lambda: os.getenv("CC_MODEL", "claude-sonnet-4-5"))
+    max_steps: int = field(default_factory=lambda: int(os.getenv("CC_MAX_STEPS", "8")))
+    context_window: int = field(
+        default_factory=lambda: int(os.getenv("CC_CONTEXT_WINDOW", "180000"))
+    )
+    max_sessions: int = field(default_factory=lambda: int(os.getenv("CC_MAX_SESSIONS", "512")))
 
 
 @dataclass
@@ -111,11 +131,26 @@ class Metrics:
     ungrounded_blocked: int = 0
     tool_failures: int = 0
     total_tokens: int = 0
-    latency_ms: list[float] = field(default_factory=list)
+    #: Bounded. An unbounded list is a slow leak and an increasingly expensive /metrics scrape
+    #: (docs/AUDIT.md, P2-8). A thousand samples give the same percentiles.
+    latency_ms: deque[float] = field(default_factory=lambda: deque(maxlen=1024))
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    def record(self, **deltas: int) -> None:
+        """Increment counters under a lock: the worker thread writes, the loop reads."""
+        with self._lock:
+            for name, delta in deltas.items():
+                setattr(self, name, getattr(self, name) + delta)
+
+    def observe_latency(self, value: float) -> None:
+        """Record one request's wall time."""
+        with self._lock:
+            self.latency_ms.append(value)
 
     def snapshot(self) -> dict[str, Any]:
         """Current values, plus p50/p95 computed on read."""
-        ordered = sorted(self.latency_ms)
+        with self._lock:
+            ordered = sorted(self.latency_ms)
 
         def pct(p: float) -> float:
             if not ordered:
@@ -133,6 +168,44 @@ class Metrics:
             "p50_latency_ms": pct(0.50),
             "p95_latency_ms": pct(0.95),
         }
+
+
+class SessionStore:
+    """Bounded, in-process, LRU conversation memory.
+
+    Sessions used to be constructed per request and thrown away, so `session_id` was accepted,
+    validated, threaded through, and dropped: turn two of every conversation started from
+    nothing (docs/AUDIT.md, P0-3).
+
+    This makes multi-turn work on **one** instance. It does not make it work behind an
+    autoscaler: two Cloud Run instances do not share this dict, and a session pinned to the
+    wrong one is a session that has forgotten. The fix is a Postgres-backed store, which the
+    memory module was designed for and does not have. Stated here rather than discovered in
+    production.
+    """
+
+    def __init__(self, factory: Callable[[str], ConversationMemory], max_sessions: int) -> None:
+        """Build a store that evicts the least recently used session."""
+        self._factory = factory
+        self._max = max_sessions
+        self._sessions: OrderedDict[str, ConversationMemory] = OrderedDict()
+        self._lock = threading.Lock()
+
+    def get(self, session_id: str) -> ConversationMemory:
+        """Return the session's memory, creating it if this is turn one."""
+        with self._lock:
+            memory = self._sessions.get(session_id)
+            if memory is None:
+                memory = self._factory(session_id)
+                self._sessions[session_id] = memory
+            self._sessions.move_to_end(session_id)
+            while len(self._sessions) > self._max:
+                self._sessions.popitem(last=False)
+            return memory
+
+    def __len__(self) -> int:
+        """How many live sessions are held."""
+        return len(self._sessions)
 
 
 class ChatRequest(BaseModel):
@@ -185,9 +258,19 @@ def create_app(
         return AnthropicClient(model=config.model)
 
     make_client = client_factory or default_client
+
+    def new_memory(session_id: str) -> ConversationMemory:
+        return ConversationMemory(
+            session_id=session_id,
+            budget=ContextBudget(context_window=config.context_window, max_output_tokens=2048),
+        )
+
+    sessions = SessionStore(new_memory, max_sessions=config.max_sessions)
+
     app = FastAPI(title="campaign-copilot", version="0.1.0")
     app.state.metrics = metrics
     app.state.settings = config
+    app.state.sessions = sessions
 
     @app.middleware("http")
     async def _request_context(request: Request, call_next: Any) -> Any:
@@ -231,7 +314,19 @@ def create_app(
             import httpx
 
             try:
-                httpx.get(f"{config.executor_url}/healthz", timeout=2.0).raise_for_status()
+                headers = {}
+                if config.executor_audience:
+                    from campaign_copilot.tools.remote_exec import (
+                        google_id_token_provider,
+                    )
+
+                    token = google_id_token_provider(config.executor_audience)()
+                    if token:
+                        headers["Authorization"] = f"Bearer {token}"
+                response = httpx.get(
+                    f"{config.executor_url}/healthz", timeout=2.0, headers=headers
+                )
+                response.raise_for_status()
                 checks["executor"] = "ok"
             except Exception as err:
                 checks["executor"] = f"error: {err}"
@@ -249,7 +344,7 @@ def create_app(
     @app.post("/v1/chat")
     async def chat(body: ChatRequest) -> StreamingResponse:
         """Stream the agent's decisions as server-sent events."""
-        metrics.requests += 1
+        metrics.record(requests=1)
         rid = request_id.get()
         queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
         loop = asyncio.get_running_loop()
@@ -258,14 +353,17 @@ def create_app(
             loop.call_soon_threadsafe(queue.put_nowait, {**event, "request_id": rid})
 
         def work() -> None:
+            """Run the agent, streaming events, and always push the terminating sentinel.
+
+            Everything is inside the `try`. A failure in the *setup* used to hang the stream
+            forever: the sentinel lives in `finally`, and there was code above the `try`.
+            """
             started = time.perf_counter()
+            token = None
             try:
-                memory = ConversationMemory(
-                    session_id=body.session_id,
-                    budget=ContextBudget(
-                        context_window=config.context_window, max_output_tokens=2048
-                    ),
-                )
+                # The sandbox reads the session from here, never from the model's arguments.
+                token = session_scope.set(body.session_id)
+                memory = sessions.get(body.session_id)
                 agent = Agent(
                     make_client(),
                     registry,
@@ -274,25 +372,27 @@ def create_app(
                     max_steps=config.max_steps,
                 )
                 result = agent.run(body.question, on_event=emit)
-                metrics.total_tokens += result.trace.usage.total_tokens
-                metrics.tool_failures += sum(
-                    1 for s in result.trace.steps if s.tool and not s.ok
+                metrics.record(
+                    total_tokens=result.trace.usage.total_tokens,
+                    tool_failures=sum(1 for s in result.trace.steps if s.tool and not s.ok),
                 )
                 if result.needs_clarification:
-                    metrics.clarifications += 1
+                    metrics.record(clarifications=1)
                 elif result.ok:
-                    metrics.answers += 1
+                    metrics.record(answers=1)
                 else:
-                    metrics.errors += 1
+                    metrics.record(errors=1)
                     if result.trace.grounding and not result.trace.grounding.ok:
-                        metrics.ungrounded_blocked += 1
+                        metrics.record(ungrounded_blocked=1)
                 emit({"type": "done", "ok": result.ok, "answer": result.answer})
             except Exception as err:
-                metrics.errors += 1
+                metrics.record(errors=1)
                 logger.exception("agent failed")
                 emit({"type": "error", "reason": "internal", "text": str(err)})
             finally:
-                metrics.latency_ms.append((time.perf_counter() - started) * 1000)
+                if token is not None:
+                    session_scope.reset(token)
+                metrics.observe_latency((time.perf_counter() - started) * 1000)
                 loop.call_soon_threadsafe(queue.put_nowait, None)
 
         async def stream() -> AsyncIterator[str]:

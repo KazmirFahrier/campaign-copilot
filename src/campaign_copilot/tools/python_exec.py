@@ -29,20 +29,27 @@ agent is told which, rather than silently losing them.
 
 from __future__ import annotations
 
-import os
+import contextvars
 import pickle
-import resource
 import subprocess
 import sys
 import tempfile
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar
 
 from campaign_copilot.tools.base import ToolResult, ToolSpec
 
-__all__ = ["PythonSandbox", "SandboxConfig"]
+__all__ = ["PythonSandbox", "SandboxConfig", "session_scope"]
+
+#: The session whose namespace the sandbox may touch. Set by the server, per request.
+#:
+#: An earlier version accepted `session_id` as a tool argument, which put it in the model's
+#: action space: a persuaded agent could name another user's session and read their variables
+#: (docs/AUDIT.md, P1-4). A session id is server state. The model does not get to choose one.
+session_scope: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "session_scope", default="default"
+)
 
 _RUNNER = Path(__file__).with_name("_runner.py")
 
@@ -58,20 +65,12 @@ class SandboxConfig:
     max_file_bytes: int = 8 * 1024 * 1024
 
 
-def _limit_factory(config: SandboxConfig) -> Callable[[], None]:
-    """Build the ``preexec_fn`` that applies rlimits in the child before ``exec``."""
-
-    def apply_limits() -> None:  # pragma: no cover - runs only in the child process
-        os.setsid()  # own process group, so a timeout kills grandchildren too
-        mem = config.memory_mb * 1024 * 1024
-        resource.setrlimit(resource.RLIMIT_AS, (mem, mem))
-        resource.setrlimit(resource.RLIMIT_CPU, (config.cpu_seconds, config.cpu_seconds))
-        resource.setrlimit(
-            resource.RLIMIT_FSIZE, (config.max_file_bytes, config.max_file_bytes)
-        )
-        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-
-    return apply_limits
+# `preexec_fn` used to live here. It ran arbitrary Python between fork() and exec(), where
+# only async-signal-safe calls are legal, and the api service invokes the agent from a worker
+# thread (docs/AUDIT.md, P1-5): a lock held by another thread at fork time is held forever in
+# the child. The limits are now applied by `_runner.py` in the child *after* exec, where the
+# process is single-threaded and `resource.setrlimit` is ordinary Python. `os.setsid()` has a
+# dedicated, safe flag: `start_new_session=True`.
 
 
 @dataclass
@@ -90,10 +89,7 @@ class PythonSandbox:
         ),
         input_schema={
             "type": "object",
-            "properties": {
-                "code": {"type": "string"},
-                "session_id": {"type": "string", "default": "default"},
-            },
+            "properties": {"code": {"type": "string"}},
             "required": ["code"],
         },
     )
@@ -125,7 +121,8 @@ class PythonSandbox:
     def run(self, **kwargs: Any) -> ToolResult:
         """Execute ``code``, returning stdout and the names that survived."""
         code: str = kwargs.get("code", "")
-        session_id: str = kwargs.get("session_id", "default")
+        # Never from kwargs: see `session_scope`.
+        session_id: str = session_scope.get()
         if not code.strip():
             return ToolResult.failure("EMPTY_CODE", "No code was provided.")
 
@@ -141,10 +138,16 @@ class PythonSandbox:
             completed = subprocess.run(
                 [sys.executable, "-I", str(_RUNNER), str(payload_path), str(result_path)],
                 cwd=work,
-                env={"PATH": "/usr/bin:/bin", "HOME": str(work)},
+                env={
+                    "PATH": "/usr/bin:/bin",
+                    "HOME": str(work),
+                    "CC_MEMORY_MB": str(self.config.memory_mb),
+                    "CC_CPU_SECONDS": str(self.config.cpu_seconds),
+                    "CC_MAX_FILE_BYTES": str(self.config.max_file_bytes),
+                },
                 capture_output=True,
                 timeout=self.config.timeout_seconds,
-                preexec_fn=_limit_factory(self.config),
+                start_new_session=True,  # own process group; a timeout kills grandchildren
                 check=False,
             )
         except subprocess.TimeoutExpired:

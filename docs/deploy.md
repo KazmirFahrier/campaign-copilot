@@ -7,7 +7,7 @@ same species of lie as an ungrounded number, and this project is about not telli
 
 | Artifact | Verified how | Not verified |
 |---|---|---|
-| `deploy/terraform/*.tf` | `terraform fmt -check`, `terraform validate` against the real `hashicorp/google` v6 provider schema | never applied; no plan against a project |
+| `deploy/terraform/*.tf` | `terraform fmt -check`, `terraform validate` against the real `hashicorp/google` v6 provider schema | never applied; no plan against a project. **`validate` checks syntax and provider schema. It says nothing about whether the two services can talk** — it passed for weeks while the api sent no auth token to an executor that requires one (`docs/AUDIT.md`, P0-2). |
 | `deploy/Dockerfile.api`, `.executor` | reviewed | never built (no Docker in this environment) |
 | `deploy/docker-compose.yml` | reviewed | never run |
 | `web/` | `tsc --noEmit` under `strict`, `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`; 7 unit tests via `node --test` | never served |
@@ -52,14 +52,24 @@ boundary sits is a deployment decision, and it must not change a line of the loo
 - **The warehouse is baked into the image.** Fine for a demo with a deterministic generator;
   wrong for anything real. Production points `CC_WAREHOUSE` at BigQuery, which is a dbt profile
   change, not a rewrite.
-- **Sessions are in-process.** Two Cloud Run instances do not share `ConversationMemory`, so
-  multi-turn breaks the moment it autoscales past one. The fix is the Postgres session store
-  the memory module was designed for and does not yet have. Named here rather than discovered
-  in production.
+- **Sessions are in-process.** `SessionStore` is a bounded LRU dict, so multi-turn works on
+  **one instance** and breaks the moment Cloud Run autoscales past one. The fix is the Postgres
+  session store the memory module was designed for and does not yet have.
+
+  An earlier version of this file described exactly that limitation while the code had no
+  session store at all: memory was constructed per request and discarded, so `session_id` was
+  accepted, validated, threaded through, and dropped (`docs/AUDIT.md`, P0-3). Understating a
+  total absence as a scaling caveat is worse than omitting it — it tells the reader the feature
+  exists.
 - **The executor's namespace is on local disk.** It does not survive an instance restart, and
   a session pinned to one instance is a session that vanishes. Same fix.
 - **No authentication on `/v1/chat`.** The api is `INGRESS_TRAFFIC_ALL` with no IAM invoker
   restriction. Do not put a key behind this without adding one.
+
+- **Pinned facts are unreachable.** `ConversationMemory.pin()` exists, is tested, and has no
+  caller: the agent has no tool with which to pin one (`docs/AUDIT.md`, P1-6). Adding one
+  changes the agent's action space and needs eval cases before it changes the loop, so it is
+  open rather than patched.
 
 ## Running it locally
 
@@ -89,6 +99,9 @@ terraform init
 terraform plan  -var project_id="${PROJECT}" -var image_tag="${TAG}"
 terraform apply -var project_id="${PROJECT}" -var image_tag="${TAG}"
 ```
+
+The api needs `CC_EXECUTOR_AUDIENCE` set to the executor's URL so it can mint the OIDC identity
+token Cloud Run's invoker binding requires. Without it every `python_exec` call returns 403.
 
 Then, before trusting it:
 
