@@ -131,10 +131,26 @@ class FigureSet:
         for figure in self.figures.values():
             if figure.sql is not None:
                 rows = execute(figure.sql)
+                # A Figure is a single number. Its SQL must return exactly one row and one
+                # column. Checking only rows[0][-1] let a per-channel breakdown whose first
+                # row happened to match pass as a scalar total (docs/AUDIT.md, R3-1): the
+                # figure was "verified" against a query that does not compute it.
                 if not rows or not rows[0]:
                     problems.append(f"{figure.id}: SQL returned no rows")
                     continue
-                actual = rows[0][-1]
+                if len(rows) != 1:
+                    problems.append(
+                        f"{figure.id}: SQL returned {len(rows)} rows; a figure is one number, "
+                        "so its query must return exactly one"
+                    )
+                    continue
+                if len(rows[0]) != 1:
+                    problems.append(
+                        f"{figure.id}: SQL returned {len(rows[0])} columns; a figure's query "
+                        "must select exactly one value"
+                    )
+                    continue
+                actual = rows[0][0]
                 if actual is None or not math.isclose(
                     float(actual), figure.value, rel_tol=tolerance, abs_tol=tolerance
                 ):

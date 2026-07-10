@@ -154,9 +154,11 @@ def build_weekly_review(
                 label=f"ROAS, {best.channel}",
                 value=best.roas if best.roas is not None else 0.0,
                 unit="ratio",
+                # No `["channel"]` group-by: the channel is already pinned by the filter, so
+                # grouping added a second column and made a scalar figure's query non-scalar
+                # (docs/AUDIT.md, R3-1, found by the stricter verify).
                 sql=layer.build_query(
                     ["roas"],
-                    ["channel"],
                     filters=[
                         *_window(week_start, week_end),
                         CAMPAIGN_ONLY,

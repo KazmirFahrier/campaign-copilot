@@ -402,3 +402,114 @@ and it is the first thing I would reach for again.
 One more datum, and it is uncomfortable. In Phase 4 I mutation-tested the gate, reported that
 it caught the regression, and moved on. It did catch *that* mutation. I generalised from one
 sample to a property, wrote the property into the README, and the property was false.
+
+---
+
+# Audit, round three
+
+Two of these came from questions I flagged at the end of round two and had not yet run. Two
+more came from the audit process itself leaving damage behind. That second pair is the more
+uncomfortable, and the more useful.
+
+| # | Severity | Finding | Status |
+|---|---|---|---|
+| R3-1 | **P1** | `Figure.verify` checked only `rows[0][-1]`; a multi-row result passed as a scalar | fixed — and it immediately caught a real bug in the shipped report |
+| R3-2 | **P1** | The TypeScript event union was missing `compressed`; the client silently dropped it | fixed |
+| R3-3 | **P1** | `EVAL_REPORT.md` overstated what the `no_metric_atoms` row proves | fixed |
+| R3-4 | **P2** | A round-two mutation (`type: "cost"`) was never reverted and sat in the committed source | fixed |
+| R3-5 | **P2** | `tsc` never actually typechecked the test file locally: `@types/node` was uninstalled and `package-lock.json` was untracked | fixed |
+
+## R3-1. The report's own integrity check had a hole, and it was hiding a real bug
+
+`FigureSet.verify()` re-executes each figure's SQL and compares. It read `rows[0][-1]` -- the
+last column of the first row. A figure is a single number, so its query must return exactly one
+row and one column, and nothing checked that.
+
+```console
+figure: total spend = 100
+SQL returns: [[100], [250], [999]]      # a three-row breakdown
+verify(): NONE
+```
+
+The first row matched by luck and the other two were invisible. Fixed by requiring `len(rows)
+== 1 and len(rows[0]) == 1`.
+
+The fix earned itself immediately. Run against the *actual shipped weekly review*, it failed:
+
+```
+F9: SQL returned 2 columns; a figure's query must select exactly one value
+```
+
+`F9` ("ROAS, best channel") was built with `build_query(["roas"], ["channel"], filters=[... channel = X])`
+-- it grouped by channel *and* filtered to one channel, producing a `(channel, roas)` row. The
+scalar figure had been comparing its value against the `roas` column by position and passing,
+but the query was not a scalar query. Every deck this project has generated shipped with that
+figure. The channel is already pinned by the filter, so the group-by is dropped and F9 is now a
+one-column query. The number is unchanged; the provenance is now honest.
+
+A verification that is too weak does not announce itself. It passes.
+
+## R3-2. The exhaustiveness guarantee I bragged about did not cover this case
+
+Round one's fix added a `compressed` event to the agent's stream. The TypeScript `AgentEvent`
+union was not updated. `parseEvent` returned `null` for it and the client showed a blank line.
+
+The README says the discriminated union with a `never` check makes "a new server event the
+renderer forgets to handle a compile error." That is true for a *superfluous* member and false
+for a *missing* one: the `never` check fires when you add a case to the union without handling
+it, not when the server emits a type the union never learned about. The two must be kept in
+sync by a test, and now are (`the compressed event survives parsing`).
+
+I added the server event and wrote the sentence claiming the client was safe against exactly
+this, in the same project, and did not connect them. The `never` check is real and load-bearing
+-- removing the `compressed` case from `describe()` is a compile error, verified -- it simply
+does not guard the boundary I implied it did.
+
+## R3-3. The centerpiece claim was stronger than the evidence
+
+The `no_metric_atoms` row is the report's headline: twelve grounded, cited, wrong answers. The
+prose framed all twelve as the ratio-of-sums error -- the semantic layer's raison d'être.
+
+They are not. The naive policy emits `avg(revenue/spend)` for *every* question. So:
+
+- **3 of 12** were asked for ROAS and got the subtle, wrong ratio-of-averages. The textbook case.
+- **9 of 12** were asked for spend, CTR, CPC, AOV -- and got a ROAS number instead. The policy
+  answered a *different question*, and the grounding gate could not tell, because the number was
+  real.
+
+Both support the actual thesis -- a number can be grounded, cited, and still wrong -- but the
+report implied the stronger, narrower claim that the metric-atom rule catches subtle ROAS errors
+at scale. The corrected text states the 3/9 split and adds the sentence that was missing: this
+row does not establish a hallucinated-ROAS *rate* for a real model. That needs `make eval-live`.
+The demonstration is that grounding is necessary and not sufficient. That is enough, and it is
+true; the earlier phrasing reached past it.
+
+## R3-4 and R3-5. The audit damaged the thing it was auditing
+
+Round two mutation-tested the TypeScript union by adding `type: "cost"`, confirming the compile
+error, and restoring from a `.bak`. The `.bak` was taken *before* the `compressed` fix in the
+same session, so the "restore" reverted the wrong version -- and separately, the `cost` line
+survived in the committed file. Round two's own writeup says "restored: clean." It was not.
+
+And `@types/node` was declared in `package.json` but never installed in this environment, so
+every local `tsc` run failed on `events.test.ts` with `Cannot find name 'node:test'` -- while I
+reported "tsc clean," because I was reading the exit line for `events.ts` and not the test file.
+`package-lock.json` was also untracked, so CI's `npm ci` would have failed outright before
+reaching the typecheck. Only CI would have caught any of it, and CI had never run.
+
+The lesson compounds the one from round two. There I concluded that I write the check and the
+thing it checks with the same blind spot. Here the checking *process* introduced two defects and
+declared success over both. The only thing that caught them was running the exact command CI
+runs, from a clean state, and reading all of the output rather than the last line.
+
+## Standing count after three rounds
+
+Twenty-five findings. Twenty-one fixed, four open and named:
+pinned facts unreachable (P1-6b), `docs/failure-modes.md` unwritten (P2-9), multi-turn unscored
+(P2-10), and the residual grounding hole where an agent that runs any query may still repeat a
+number from the question (R2-4, measured by `context_only`, not closed).
+
+The trajectory is the point. Round one: missing edges. Round two: wrong instruments. Round three:
+the audit itself is not exempt. Each round found a class of error the previous round's method
+could not see, and there is no reason to believe round four would find nothing -- only that it
+would need a method I have not used yet.

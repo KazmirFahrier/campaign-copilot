@@ -14,10 +14,10 @@ export type AgentEvent =
   | { type: "tool_result"; tool: string; ok: boolean; error_code: string | null; preview: string; request_id: string }
   | { type: "grounding"; ok: boolean; checked: number; ungrounded: string[]; request_id: string }
   | { type: "clarify"; question: string; request_id: string }
+  | { type: "compressed"; turns: number; request_id: string }
   | { type: "answer"; text: string; request_id: string }
   | { type: "error"; reason: string; text: string; request_id: string }
-  | { type: "done"; ok: boolean; answer: string; request_id: string }
-  | { type: "cost"; usd: number; request_id: string };
+  | { type: "done"; ok: boolean; answer: string; request_id: string };
 
 export type AgentEventType = AgentEvent["type"];
 
@@ -34,7 +34,8 @@ export function parseEvent(raw: string): AgentEvent | null {
   if (typeof candidate.type !== "string") return null;
 
   const known: readonly AgentEventType[] = [
-    "start", "step", "tool_call", "tool_result", "grounding", "clarify", "answer", "error", "done",
+    "start", "step", "tool_call", "tool_result", "grounding", "clarify", "compressed",
+    "answer", "error", "done",
   ];
   return known.includes(candidate.type as AgentEventType) ? (value as AgentEvent) : null;
 }
@@ -83,6 +84,8 @@ export function describe(event: AgentEvent): string {
         : `Blocked: ${event.ungrounded.join(", ")} came from no query`;
     case "clarify":
       return `Needs clarification: ${event.question}`;
+    case "compressed":
+      return `Compressed ${event.turns} older turns into the running summary`;
     case "answer":
       return "Answer accepted";
     case "error":

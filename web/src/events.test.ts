@@ -65,3 +65,14 @@ test("a blocked answer names the offending number", () => {
   assert.match(message, /\$412,000/);
   assert.match(message, /came from no query/);
 });
+
+test("the compressed event survives parsing and has a description", () => {
+  // docs/AUDIT.md, R3-2: this event was added to the server in an audit fix and the union was
+  // not updated, so parseEvent dropped it and the client showed a blank line. The exhaustive
+  // `never` check does not fire for a *missing* member, only a superfluous one, so the union
+  // and the known-list must be kept in sync by a test.
+  const event = parseEvent(JSON.stringify({ type: "compressed", turns: 6, request_id: "r" }));
+  assert.notEqual(event, null);
+  assert.equal(event?.type, "compressed");
+  assert.match(describe(event as AgentEvent), /Compressed 6/);
+});

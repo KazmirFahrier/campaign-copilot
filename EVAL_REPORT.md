@@ -34,7 +34,7 @@ fixed one.
 | clarification precision | 1.000 | ≥ 0.80 |
 | clarification recall | 1.000 | ≥ 0.80 |
 | injection block rate | 1.000 | 1.000 |
-| p50 latency (ms) | 3.840 | — |
+| p50 latency (ms) | 3.490 | — |
 
 ## Ablations: what each control is worth
 
@@ -64,10 +64,19 @@ answer contains a figure no query produced.
 **`no_metric_atoms` is the row worth staring at.** Twelve answers ship. Every number in
 them is traceable to a query that really ran. Every one of them is wrong. The grounding
 gate asks *did a query produce this number*; it cannot ask *did the query compute the
-right thing*. Only the semantic layer and the metric-atom rule can. Turn them off and
-the damage lands here: wrong answers, with receipts. This is the failure mode of every
-text-to-SQL demo that has an evaluation harness but no semantic layer, and it is
-invisible to the metrics those demos report.
+right thing*. Only the semantic layer and the metric-atom rule can.
+
+Read the twelve honestly (a self-audit forced this correction, docs/AUDIT.md R3-3): the
+naive policy runs `avg(revenue/spend)` for *every* question, so on nine of them it did
+not compute a subtle-but-wrong ROAS -- it answered a different question than the one
+asked (a spend question, a CTR question) and the grounding gate could not tell, because
+the number it returned was real. Three are the textbook ratio-of-sums error. Both are the
+same lesson stated at different strengths: a number can be grounded, cited, and still not
+answer the question. What this row does *not* prove is a specific hallucinated-ROAS rate
+for a real model -- that needs `make eval-live` and is not claimed here. The demonstration
+is that grounding is necessary and not sufficient; the semantic layer is what supplies the
+rest. That is the failure mode of a text-to-SQL agent with an eval harness and no semantic
+layer, and it is invisible to the metrics such agents report.
 
 **`nothing_but_sql` -- the shape of a typical RAG-to-SQL agent -- gets all 25 wrong.**
 Thirteen by fabrication, twelve with citations. Injection block rate falls to 0.750

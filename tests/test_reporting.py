@@ -194,3 +194,26 @@ def test_the_deck_contains_no_placeholder_text(review, tmp_path: Path) -> None:
     ).lower()
     for banned in ("lorem", "ipsum", "todo", "[insert", "xxx"):
         assert banned not in text
+
+
+def test_verify_rejects_a_multi_row_result_for_a_scalar_figure() -> None:
+    """docs/AUDIT.md, R3-1. verify() checked only rows[0][-1].
+
+    A per-channel breakdown whose first row happened to match the claimed total passed as a
+    scalar. A Figure is one number; its query must return exactly one row and one column.
+    """
+    figures = FigureSet()
+    figures.add(
+        Figure(id="F1", label="total spend", value=100.0, sql="select spend", unit="usd")
+    )
+    problems = figures.verify(lambda sql: [[100.0], [250.0], [999.0]])
+    assert problems and "returned 3 rows" in problems[0]
+
+
+def test_verify_rejects_a_multi_column_result_for_a_scalar_figure() -> None:
+    figures = FigureSet()
+    figures.add(
+        Figure(id="F1", label="roas", value=9.7, sql="select channel, roas", unit="ratio")
+    )
+    problems = figures.verify(lambda sql: [["paid_search", 9.7]])
+    assert problems and "returned 2 columns" in problems[0]
