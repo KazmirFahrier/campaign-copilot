@@ -1,4 +1,4 @@
-.PHONY: install warehouse test lint fmt types check clean eval eval-gate eval-baseline report
+.PHONY: install warehouse test lint fmt types check clean eval eval-gate eval-baseline report serve serve-executor web infra
 
 install:
 	pip install -e ".[dev,warehouse]"
@@ -23,6 +23,18 @@ eval-baseline:            ## Freeze the current ceiling as the new baseline
 report:                   ## Generate the weekly review; fails if any figure cannot be reproduced
 	python -m campaign_copilot.reporting --out reports
 
+serve:                    ## Run the api locally (in-process executor: NOT a security boundary)
+	uvicorn campaign_copilot.service.app:create_app --factory --reload --port 8080
+
+serve-executor:           ## Run the executor locally
+	uvicorn campaign_copilot.service.executor:create_app --factory --port 8081
+
+web:                      ## Typecheck and test the TypeScript client
+	cd web && npm ci && npx tsc --noEmit && npm test
+
+infra:                    ## Format-check and validate the Terraform
+	cd deploy/terraform && terraform fmt -check && terraform init -backend=false && terraform validate
+
 lint:
 	ruff check src tests
 
@@ -32,7 +44,7 @@ fmt:
 types:
 	mypy
 
-check: lint types test eval-gate
+check: lint types test eval-gate infra
 
 clean:
 	rm -rf warehouse/target warehouse/logs warehouse/*.duckdb .pytest_cache .mypy_cache .ruff_cache

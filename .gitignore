@@ -25,3 +25,10 @@ warehouse/*.duckdb.wal
 .env
 .env.*
 !.env.example
+
+# node / terraform
+web/node_modules/
+web/dist/
+deploy/terraform/.terraform/
+deploy/terraform/.terraform.lock.hcl
+deploy/terraform/*.tfstate*

@@ -1,0 +1,43 @@
+# Local reproduction of the production boundary.
+#
+# The executor sits on an `internal: true` network: the api can reach it, and it can reach
+# nothing. `network_mode: none` would be wrong here -- it removes inbound as well, and the
+# executor needs to be callable. Ingress without egress is the property we want, and it is
+# the same property the Terraform encodes with a VPC connector and no Cloud NAT.
+services:
+  executor:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.executor
+    networks: [backend]
+    read_only: true
+    tmpfs:
+      - /scratch:size=256m,mode=1777
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 1g
+    pids_limit: 128
+    # environment: intentionally empty. assert_no_secrets() crash-loops the container if a
+    # credential ever appears here.
+
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.api
+    depends_on: [executor]
+    ports: ["8080:8080"]
+    networks: [backend, default]
+    read_only: true
+    tmpfs: ["/tmp:size=64m"]
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      CC_EXECUTOR_URL: http://executor:8080
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?set ANTHROPIC_API_KEY}
+
+networks:
+  backend:
+    internal: true   # no route to the internet
+  default:

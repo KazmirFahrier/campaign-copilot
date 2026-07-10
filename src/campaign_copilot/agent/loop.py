@@ -26,6 +26,8 @@ failure:
 from __future__ import annotations
 
 import json
+import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -41,6 +43,28 @@ from campaign_copilot.tools.base import Tool, ToolResult
 __all__ = ["Agent", "AgentResult", "AgentTrace", "Step", "StepRecord", "ToolCall"]
 
 Action = Literal["tool", "clarify", "answer"]
+
+logger = logging.getLogger(__name__)
+
+
+def _safe_emitter(
+    on_event: Callable[[dict[str, Any]], None] | None,
+) -> Callable[[dict[str, Any]], None]:
+    """Wrap a subscriber so a broken listener cannot alter the agent's behaviour.
+
+    Observability that can change the thing it observes is not observability.
+    """
+    if on_event is None:
+        return lambda _event: None
+
+    def emit(event: dict[str, Any]) -> None:
+        try:
+            on_event(event)
+        except Exception:
+            logger.exception("event subscriber raised; continuing")
+
+    return emit
+
 
 _ESCALATION = (
     "I could not complete this. The `{tool}` tool failed twice in a row:\n\n{error}\n\n"
@@ -192,8 +216,20 @@ class Agent:
 
     # --------------------------------------------------------------------- run
 
-    def run(self, question: str) -> AgentResult:
-        """Answer ``question``, or explain why it will not."""
+    def run(
+        self,
+        question: str,
+        on_event: Callable[[dict[str, Any]], None] | None = None,
+    ) -> AgentResult:
+        """Answer ``question``, or explain why it will not.
+
+        ``on_event`` receives one dict per decision. The service streams these, so a user
+        watching a fifteen-second query sees the plan, the SQL, and the grounding verdict as
+        they happen rather than a spinner. Events are observations, never control flow: an
+        exception raised by a subscriber must not be able to change what the agent does.
+        """
+        emit = _safe_emitter(on_event)
+        emit({"type": "start", "question": question})
         self.memory.add(Message(role="user", content=question))
         trace = AgentTrace(prompt_fingerprint=self.prompts.fingerprint())
 
@@ -220,9 +256,19 @@ class Agent:
                 )
             trace.usage = trace.usage + stats.usage
 
+            emit(
+                {
+                    "type": "step",
+                    "index": index,
+                    "action": step.action,
+                    "reasoning": step.reasoning,
+                }
+            )
+
             if step.action == "clarify":
                 trace.steps.append(StepRecord(index, "clarify", repairs=stats.repairs))
                 question_text = step.clarifying_question or ""
+                emit({"type": "clarify", "question": question_text})
                 self.memory.add(Message(role="assistant", content=question_text))
                 return AgentResult(
                     ok=True, answer=question_text, trace=trace, needs_clarification=True
@@ -232,10 +278,19 @@ class Agent:
                 answer = step.answer or ""
                 report = self.checker.check(answer, facts, context_numbers=context_numbers)
                 trace.grounding = report
+                emit(
+                    {
+                        "type": "grounding",
+                        "ok": report.ok,
+                        "checked": report.checked,
+                        "ungrounded": [c.raw for c in report.ungrounded],
+                    }
+                )
                 if report.ok:
                     trace.steps.append(StepRecord(index, "answer", repairs=stats.repairs))
                     trace.facts = facts
                     self.memory.add(Message(role="assistant", content=answer))
+                    emit({"type": "answer", "text": answer})
                     return AgentResult(ok=True, answer=answer, trace=trace)
 
                 trace.steps.append(
@@ -260,7 +315,17 @@ class Agent:
             # action == "tool"
             call = step.tool_call
             assert call is not None
+            emit({"type": "tool_call", "tool": call.tool, "arguments": call.arguments})
             result = self._dispatch(call)
+            emit(
+                {
+                    "type": "tool_result",
+                    "tool": call.tool,
+                    "ok": result.ok,
+                    "error_code": result.error_code,
+                    "preview": result.content[:400],
+                }
+            )
             failures = consecutive_failures.get(call.tool, 0)
 
             trace.steps.append(
@@ -280,11 +345,9 @@ class Agent:
             else:
                 consecutive_failures[call.tool] = failures + 1
                 if failures + 1 >= 2:
-                    return AgentResult(
-                        ok=False,
-                        answer=_ESCALATION.format(tool=call.tool, error=result.content),
-                        trace=trace,
-                    )
+                    escalation = _ESCALATION.format(tool=call.tool, error=result.content)
+                    emit({"type": "error", "reason": "tool_failed_twice", "text": escalation})
+                    return AgentResult(ok=False, answer=escalation, trace=trace)
 
             scratch.append(
                 Message(

@@ -1,0 +1,26 @@
+# The executor service. Runs untrusted, model-authored Python.
+#
+# It holds NOTHING: no LLM key, no database credential, no service-account token worth
+# stealing. It has no egress. Arbitrary code execution inside this container buys an
+# attacker a container with nothing in it, which is the entire design.
+#
+# The application asserts this at startup: campaign_copilot.service.executor.assert_no_secrets
+# raises and the process crash-loops if any credential is visible in its environment. A
+# misconfigured revision fails loudly rather than becoming quietly insecure.
+FROM python:3.12-slim AS build
+WORKDIR /build
+COPY pyproject.toml README.md ./
+COPY src ./src
+RUN pip install --no-cache-dir --prefix=/install .
+
+FROM python:3.12-slim
+RUN useradd --uid 10002 --create-home --shell /usr/sbin/nologin executor \
+ && mkdir -p /scratch && chown executor:executor /scratch
+COPY --from=build /install /usr/local
+WORKDIR /scratch
+USER executor
+
+ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 TMPDIR=/scratch
+
+EXPOSE 8080
+CMD ["sh", "-c", "uvicorn campaign_copilot.service.executor:create_app --factory --host 0.0.0.0 --port ${PORT:-8080}"]

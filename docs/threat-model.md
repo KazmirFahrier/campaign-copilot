@@ -74,17 +74,28 @@ What it does **not** buy: any of the above against someone who knows the code ex
 `importlib.reload(socket)` restores the socket module in one line. The rebinding stops
 the reflex, not the adversary.
 
-**The real boundary is the container.** Phase 6 runs this with:
+**The real boundary is the container, and as of Phase 6 it exists.** `python_exec` now runs in
+a separate `executor` service (`deploy/Dockerfile.executor`, `deploy/terraform/main.tf`) with:
 
-- a distinct, unprivileged UID;
-- no network namespace (`--network none`), so the socket rebinding becomes redundant
-  rather than load-bearing;
-- a read-only rootfs with a single writable scratch mount;
-- dropped capabilities and `no-new-privileges`;
-- the LLM credentials held by a *separate* process that the sandbox cannot reach.
+- a distinct, unprivileged UID (10002) and a dropped capability set;
+- **no egress** — Cloud Run VPC access routed through a subnet with no Cloud NAT, and
+  `internal: true` in compose. The socket rebinding inside the sandbox is now redundant rather
+  than load-bearing, which is where a defence-in-depth control belongs;
+- `INGRESS_TRAFFIC_INTERNAL_ONLY`, so the public internet cannot POST arbitrary Python;
+- a read-only rootfs with one writable scratch tmpfs;
+- **no credentials of any kind**, and a service account with no IAM role bindings;
+- `assert_no_secrets()` at startup, which crash-loops the process if a credential is ever
+  visible in its environment. Infrastructure rots. An assertion does not. Tested:
+  `test_the_executor_refuses_to_start_if_it_can_see_a_credential`.
 
-Until that exists, `python_exec` should be treated as trusted-input-only. The module
-docstring says this too, so nobody has to read this file to find out.
+Arbitrary code execution inside the executor now buys an attacker a container with nothing in
+it. The seam is invisible to the agent: `RemoteSandbox.spec is PythonSandbox.spec`, and both
+return the same `ToolResult`.
+
+Caveat, stated plainly: **none of this has been applied.** The Terraform passes `validate`
+against the real provider schema; the images have never been built. See `docs/deploy.md`. In
+the in-process configuration used for local development, every word of the paragraphs above is
+false, which is why the api logs a warning on startup when `CC_EXECUTOR_URL` is unset.
 
 ### The answer: `grounding.py`
 

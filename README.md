@@ -8,11 +8,12 @@ layer, executing it in a sandbox, and refusing to state a number it cannot trace
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-> **Status: Phases 0-5 complete.** Warehouse, semantic layer, SQL guardrail, LLM core,
-> tools, grounding checker, agent loop, hybrid RAG with injection controls, the evaluation
-> harness with a CI regression gate, and document automation (197 tests, `mypy --strict`).
-> See [`EVAL_REPORT.md`](EVAL_REPORT.md) and [`docs/threat-model.md`](docs/threat-model.md).
-> Deployment is not built. Nothing here claims to be finished.
+> **Status: Phases 0-6 built; nothing is deployed.** 221 Python tests + 7 TypeScript tests,
+> `mypy --strict`, `tsc --strict`, `terraform validate`. The evaluation regression gate,
+> the report provenance check, the Terraform validation and the TypeScript typecheck all run
+> in CI. **No `terraform apply` has been run and there is no live URL** —
+> [`docs/deploy.md`](docs/deploy.md) states exactly what is verified and what is not. See also
+> [`EVAL_REPORT.md`](EVAL_REPORT.md) and [`docs/threat-model.md`](docs/threat-model.md).
 
 ---
 
@@ -298,6 +299,42 @@ Derived arithmetic is a **whitelist** (`pct_change`, `difference`, `share_of_tot
 at construction. A report generator that evaluates expressions from a data file has a remote
 code execution bug, and this one does not contain the word `eval`.
 
+## Services
+
+Two of them, because the security boundary is a deployment decision:
+
+```
+  api                      executor
+  holds the LLM key   ──►  holds nothing
+  has egress               no egress
+  runs no untrusted code   runs untrusted Python
+```
+
+Since Phase 2 the threat model has said that `python_exec` is a resource limiter, not a
+security boundary — it runs as the same UID as the agent, so anything executing there can read
+`/proc/self/environ`. Phase 6 is that boundary, enforced in three independent places:
+
+1. **IAM.** The executor's service account has no role bindings. The Secret Manager accessor
+   binding names the api's account and only that one.
+2. **Network.** Egress through a subnet with no Cloud NAT; `INGRESS_TRAFFIC_INTERNAL_ONLY`.
+   The sandbox's socket rebinding becomes redundant rather than load-bearing — which is where
+   a defence-in-depth control is supposed to end up.
+3. **The application.** `assert_no_secrets()` crash-loops the executor if a credential is ever
+   visible in its environment. Infrastructure rots; an assertion does not.
+
+The seam is invisible to the agent: `RemoteSandbox.spec is PythonSandbox.spec` — the same
+object — and both return the same `ToolResult`. There is a test asserting it.
+
+`/v1/chat` streams the agent's **decisions**, not its tokens: the plan, the SQL, the tool
+verdict, the grounding result. Chunking a finished string into fake tokens is theatre; what
+someone waiting on a warehouse query wants is to watch the reasoning. The TypeScript client
+models those events as a discriminated union with an exhaustive `never` check, so a new server
+event the renderer forgets to handle is a compile error rather than a blank panel.
+
+`/healthz` touches nothing (a dependency outage must not restart the process). `/readyz`
+checks the warehouse and the executor. `/metrics` exposes `ungrounded_blocked` — a counter
+stuck at zero forever means somebody switched the grounding gate off.
+
 ## Roadmap
 
 | Phase | Scope | Status |
@@ -308,7 +345,7 @@ code execution bug, and this one does not contain the word `eval`.
 | 3 | Hybrid RAG over schema and metric docs, grounded citations | ✅ done |
 | 4 | **Evaluation harness** — golden SQL, ablations, CI regression gate | ✅ done (κ study unrun) |
 | 5 | Document automation (markdown + pptx; Google adapter untested) | ✅ done |
-| 6 | Cloud Run deploy, Terraform, TypeScript streaming UI | ⬜ |
+| 6 | Cloud Run + Terraform + TypeScript streaming UI | 🟨 built and validated; never applied |
 
 Phase 4 is the point of the project. Everything before it exists to make the evaluation
 meaningful, and everything after it exists to make the evaluation observable in production.

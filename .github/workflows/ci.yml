@@ -19,7 +19,7 @@ jobs:
           cache: pip
 
       - name: Install
-        run: pip install -e ".[dev,warehouse,reporting]"
+        run: pip install -e ".[dev,warehouse,reporting,service]"
 
       - name: Lint
         run: ruff check src tests
@@ -52,3 +52,32 @@ jobs:
       # rather than in a client meeting.
       - name: Report provenance check
         run: make report
+
+  infra:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+      # Validated against the real provider schema. Never applied from CI.
+      - name: Terraform fmt + validate
+        run: |
+          cd deploy/terraform
+          terraform fmt -check
+          terraform init -backend=false
+          terraform validate
+
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm ci
+      # `strict` + noUncheckedIndexedAccess + exactOptionalPropertyTypes. A new server event
+      # that the renderer forgets to handle is a compile error, not a blank panel.
+      - run: npx tsc --noEmit
+      - run: npm test
