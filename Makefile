@@ -1,4 +1,4 @@
-.PHONY: install warehouse test lint fmt types check clean eval eval-gate eval-baseline
+.PHONY: install warehouse test lint fmt types check clean eval eval-gate eval-baseline report
 
 install:
 	pip install -e ".[dev,warehouse]"
@@ -19,6 +19,9 @@ eval-gate:                ## Fail if any metric regressed against the committed 
 
 eval-baseline:            ## Freeze the current ceiling as the new baseline
 	python -m campaign_copilot.evals --write-baseline --no-history
+
+report:                   ## Generate the weekly review; fails if any figure cannot be reproduced
+	python -m campaign_copilot.reporting --out reports
 
 lint:
 	ruff check src tests

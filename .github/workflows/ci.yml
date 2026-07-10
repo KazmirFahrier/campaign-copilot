@@ -19,7 +19,7 @@ jobs:
           cache: pip
 
       - name: Install
-        run: pip install -e ".[dev,warehouse]"
+        run: pip install -e ".[dev,warehouse,reporting]"
 
       - name: Lint
         run: ruff check src tests
@@ -46,3 +46,9 @@ jobs:
       # fails here. This is the difference between a report and a control.
       - name: Evaluation regression gate
         run: make eval-gate
+
+      # Every figure in the generated deck is re-executed against the warehouse. A report
+      # whose numbers no longer reproduce is a report that has drifted, and it fails here
+      # rather than in a client meeting.
+      - name: Report provenance check
+        run: make report

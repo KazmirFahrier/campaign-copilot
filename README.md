@@ -8,12 +8,11 @@ layer, executing it in a sandbox, and refusing to state a number it cannot trace
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-> **Status: Phases 0-4 complete.** Warehouse, semantic layer, SQL guardrail, LLM core,
-> tools, grounding checker, agent loop, hybrid RAG with injection controls, and the
-> evaluation harness with a CI regression gate (185 tests, 89% branch coverage,
-> `mypy --strict`). See [`EVAL_REPORT.md`](EVAL_REPORT.md) and
-> [`docs/threat-model.md`](docs/threat-model.md). Document automation and deployment are
-> not built. Nothing here claims to be finished.
+> **Status: Phases 0-5 complete.** Warehouse, semantic layer, SQL guardrail, LLM core,
+> tools, grounding checker, agent loop, hybrid RAG with injection controls, the evaluation
+> harness with a CI regression gate, and document automation (197 tests, `mypy --strict`).
+> See [`EVAL_REPORT.md`](EVAL_REPORT.md) and [`docs/threat-model.md`](docs/threat-model.md).
+> Deployment is not built. Nothing here claims to be finished.
 
 ---
 
@@ -276,6 +275,29 @@ metrics those agents report.
 neutering the metric-atom rule leaves the oracle at 1.000 and drops `injection_block_rate` to
 0.833, and the gate fails the build.
 
+## Reporting
+
+`make report` generates a weekly client review as markdown and as a `.pptx`. The same rule as
+the agent loop, applied to documents: **every number is a `Figure` that carries its own
+provenance** — either the SQL that computed it, or the whitelisted arithmetic that derived it
+from other figures.
+
+Three consequences:
+
+- `FigureSet.verify()` re-executes every query and recomputes every derivation. CI runs it.
+  A deck whose numbers no longer reproduce from the warehouse fails the build rather than the
+  client meeting.
+- The narrative passes through **the same `GroundingChecker` the agent uses** — not a second
+  implementation of the same idea. A generated sentence citing a number no figure supports
+  raises `ProvenanceError`. There is a test that injects `$412,000.00` and asserts the build dies.
+- Every slide footnotes its numbers `[F3]`, and a paginated appendix resolves each id to the
+  exact query. Full SQL lives in the speaker notes. "Where did this number come from" is the
+  first question anyone asks of an automated report; it should not require reading the code.
+
+Derived arithmetic is a **whitelist** (`pct_change`, `difference`, `share_of_total`), rejected
+at construction. A report generator that evaluates expressions from a data file has a remote
+code execution bug, and this one does not contain the word `eval`.
+
 ## Roadmap
 
 | Phase | Scope | Status |
@@ -285,7 +307,7 @@ neutering the metric-atom rule leaves the oracle at 1.000 and drops `injection_b
 | 2 | Agent loop + tool servers (SQL, sandboxed Python) | ✅ done |
 | 3 | Hybrid RAG over schema and metric docs, grounded citations | ✅ done |
 | 4 | **Evaluation harness** — golden SQL, ablations, CI regression gate | ✅ done (κ study unrun) |
-| 5 | Document automation (Docs/Slides API weekly report) | ⬜ |
+| 5 | Document automation (markdown + pptx; Google adapter untested) | ✅ done |
 | 6 | Cloud Run deploy, Terraform, TypeScript streaming UI | ⬜ |
 
 Phase 4 is the point of the project. Everything before it exists to make the evaluation
