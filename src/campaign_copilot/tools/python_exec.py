@@ -43,6 +43,16 @@ from campaign_copilot.tools.base import ToolResult, ToolSpec
 
 __all__ = ["PythonSandbox", "SandboxConfig", "session_scope"]
 
+
+class _NamespaceTooLargeError(Exception):
+    """Raised internally when a session's persisted namespace exceeds its cap."""
+
+    def __init__(self, actual: int, limit: int) -> None:
+        super().__init__(f"namespace {actual} bytes exceeds {limit}")
+        self.actual = actual
+        self.limit = limit
+
+
 #: The session whose namespace the sandbox may touch. Set by the server, per request.
 #:
 #: An earlier version accepted `session_id` as a tool argument, which put it in the model's
@@ -64,6 +74,11 @@ class SandboxConfig:
     cpu_seconds: int = 10
     max_output_bytes: int = 64 * 1024
     max_file_bytes: int = 8 * 1024 * 1024
+    #: The persisted namespace is pickled between cells. Without a cap it grows without bound
+    #: across a long session, and every cell pays to load and re-dump the whole thing
+    #: (docs/AUDIT.md, R7-1). When a cell pushes the namespace past this, the session is reset
+    #: with a loud message rather than silently accumulating or silently dropping variables.
+    max_namespace_bytes: int = 4 * 1024 * 1024
 
 
 # `preexec_fn` used to live here. It ran arbitrary Python between fork() and exec(), where
@@ -110,8 +125,16 @@ class PythonSandbox:
         return loaded
 
     def _save_namespace(self, session_id: str, namespace: dict[str, Any]) -> None:
+        blob = pickle.dumps(namespace)
+        if len(blob) > self.config.max_namespace_bytes:
+            # The cell succeeded, but keeping its state would push the persisted namespace past
+            # the cap. Reset rather than accumulate: a session that silently grows a 4MB pickle
+            # and reloads it every cell is a slow leak (docs/AUDIT.md, R7-1). The printed
+            # values are already in the result; only carried-over bindings are lost.
+            self._namespace_path(session_id).unlink(missing_ok=True)
+            raise _NamespaceTooLargeError(len(blob), self.config.max_namespace_bytes)
         with self._namespace_path(session_id).open("wb") as handle:
-            pickle.dump(namespace, handle)
+            handle.write(blob)
 
     def reset(self, session_id: str = "default") -> None:
         """Drop a session's namespace."""
@@ -181,7 +204,16 @@ class PythonSandbox:
         if outcome["error"]:
             return ToolResult.failure("EXECUTION_ERROR", outcome["error"])
 
-        self._save_namespace(session_id, outcome["namespace"])
+        try:
+            self._save_namespace(session_id, outcome["namespace"])
+        except _NamespaceTooLargeError as too_big:
+            return ToolResult.failure(
+                "NAMESPACE_TOO_LARGE",
+                f"The cell ran, but carrying its variables forward would grow this session's "
+                f"state to {too_big.actual // 1024}KB, past the {too_big.limit // 1024}KB "
+                "cap. The session has been reset. Keep large intermediates in the warehouse, "
+                "not in Python variables that persist between cells.",
+            )
 
         stdout = outcome["stdout"][: self.config.max_output_bytes]
         truncated = len(outcome["stdout"]) > self.config.max_output_bytes

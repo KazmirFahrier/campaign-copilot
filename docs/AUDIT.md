@@ -780,3 +780,68 @@ thesis: a test suite is evidence about the code it runs, and `ScriptedClient` wa
 proof that ran none of the adapter code it stood in for. The next unrun method remains the literal
 container, and after that, a live model behind `make eval-live` — the one path still validated by
 nothing but its own claim.
+
+---
+
+# Audit, round seven
+
+Six lenses used. Each changed either the environment (inputs, install, client, sockets) or the
+reading (source, untested paths). The unused lens is **time**: run the same operation many times
+and watch for state that leaks, drifts, or accumulates. Every prior round hit each thing once.
+
+One finding. The rest of the reuse-many-times surface held up, and that is recorded too.
+
+| # | Severity | Finding | Status |
+|---|---|---|---|
+| R7-1 | **P2** | A session's persisted Python namespace grows without bound across cells | fixed |
+
+## R7-1. The sandbox limited execution, not accumulation
+
+The sandbox pickles a session's namespace to disk between cells, so variables survive across
+turns. Every published limit — memory, CPU, wall time, file size — governs a *single cell*.
+Nothing governed the carried-over state.
+
+Fifty cells, each binding a modest list:
+
+```
+namespace file after 50 cells:  ns-grow.pkl  356 KB
+cell 51 load+run:               60 ms   (and rising)
+```
+
+The pickle is loaded and re-dumped on every cell, so an agent doing genuine iterative analysis
+pays a cost that grows with the length of the session, and a session that never resets grows the
+file without bound. It is the same shape as the two accumulation bugs from earlier rounds
+(scratch directories, the latency list): a per-invocation cost that looks free until you run it
+enough times.
+
+Fixed with `max_namespace_bytes` (default 4 MB). When a cell's surviving state would push the
+namespace past the cap, the session is reset and the tool returns `NAMESPACE_TOO_LARGE` with a
+message pointing the agent at the warehouse for large intermediates. The reset is loud and total,
+not a silent partial drop: the cell's printed output is already in the result, and only the
+carried bindings are lost. Mutation-checked — removing the cap fails the test.
+
+## What held up under repetition (recorded, since an audit is not only failures)
+
+- **The eval oracle is deterministic across runs.** Three identical suites: `exec=1.000`,
+  `inject=1.000`, `tokens=5290`, byte-identical. No state bleeds from one run into the next.
+- **RAG ranking is stable across rebuilds.** Building the hybrid index three times over the same
+  corpus returns the same top-5 for the same query. The `(-score, chunk_id)` tiebreak makes RRF
+  order total, so nothing depends on dict iteration or float ties.
+- **Metrics percentiles are stable and bounded.** Repeated `/metrics` scrapes of the same data
+  are identical, and after 2000 samples the deque holds exactly 1024, with percentiles reflecting
+  the recent window — the round-one bound doing its job under sustained load.
+- **`reset()` is idempotent.** Resetting a session that never existed is a no-op, not an error.
+
+## Standing count after seven rounds
+
+Thirty-four findings. Thirty fixed, four open and named (pinned facts unreachable,
+`failure-modes.md` unwritten, multi-turn unscored, spelled-out-number grounding documented as an
+accepted bound).
+
+Seven lenses now — source, adversarial input, auditing the audit, fresh install, real sockets,
+untested paths, and time. The single finding this round is a small one, and that is itself a
+data point: the accumulation bugs of rounds two and four had already trained the reflex to bound
+anything reused, and only the sandbox namespace had slipped through. The methods left unrun are
+the same two named since round four — the literal container, and a live model behind
+`make eval-live` — both requiring infrastructure this environment does not have. What can be
+reached from here has now been probed seven different ways.

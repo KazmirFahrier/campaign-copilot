@@ -258,3 +258,20 @@ def test_scratch_directories_do_not_accumulate(sandbox: PythonSandbox) -> None:
     for i in range(5):
         _in_session("gc", sandbox, code=f"x = {i}")
     assert not [p for p in sandbox.scratch.iterdir() if p.is_dir()]
+
+
+def test_a_session_namespace_cannot_grow_without_bound(sandbox: PythonSandbox) -> None:
+    """docs/AUDIT.md, R7-1. The persisted namespace is pickled between cells with no cap.
+
+    A cell whose surviving state would push the namespace past the limit resets the session
+    with a clear code, rather than silently accumulating a pickle that every later cell reloads.
+    """
+    small = SandboxConfig(timeout_seconds=5, cpu_seconds=5, max_namespace_bytes=50_000)
+    box = PythonSandbox(config=small)
+    _in_session("cap", box, code="keep = 1")
+    overflow = _in_session("cap", box, code="big = list(range(100000))")
+
+    assert not overflow.ok
+    assert overflow.error_code == "NAMESPACE_TOO_LARGE"
+    # The session was reset, so the earlier binding is gone too — loud, not partial.
+    assert not _in_session("cap", box, code="print(keep)").ok
