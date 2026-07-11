@@ -540,3 +540,24 @@ def test_readiness_reports_the_executor_when_one_is_configured() -> None:
     assert body["ready"] is False
     assert "executor" in body["checks"]
     assert client.get("/healthz").status_code == 200
+
+
+def test_the_grounding_event_carries_context_only_claims() -> None:
+    """docs/AUDIT.md, R6-2. context_only was computed and never surfaced anywhere.
+
+    A number repeated from the question after a query ran is licensed but flagged. Surfacing
+    it is what makes the residual grounding hole 'measured' rather than merely computed.
+    """
+    client = _app(
+        [
+            tool_step("t"),
+            plan("answer", answer="No campaign beat 2.5x ROAS."),
+        ]
+    )
+    # The stub returns rows, so queries_run is true and 2.5 (from the question) is context_only.
+    events = _events(
+        client.post("/v1/chat", json={"question": "did any campaign beat 2.5x ROAS?"})
+    )
+    grounding = [e for e in events if e["type"] == "grounding"]
+    assert grounding
+    assert "context_only" in grounding[0]

@@ -194,6 +194,13 @@ class AnthropicClient:
             kwargs["system"] = system
         resp = self._client.messages.create(**kwargs)
         text = "".join(block.text for block in resp.content if block.type == "text")
+        if not text and resp.content:
+            # Every block was a non-text type (tool_use, thinking). The caller expects a
+            # Step as JSON text; returning "" would fail parsing with a confusing error, so
+            # surface the real situation instead.
+            raise RuntimeError(
+                f"Anthropic returned only non-text blocks: {[b.type for b in resp.content]}"
+            )
         return LLMResponse(
             text=text,
             model=self.model,
@@ -227,13 +234,20 @@ class OpenAIClient:
         max_tokens: int = 1024,
         temperature: float = 0.0,
     ) -> LLMResponse:
-        """Call chat completions, prepending ``system`` as a system turn."""
-        payload = [m.as_dict() for m in messages]
+        """Call chat completions, prepending ``system`` as a system turn.
+
+        History system-role messages are dropped, exactly as the Anthropic adapter drops them:
+        the system prompt is owned by the ``system`` parameter, and a stray system turn in the
+        conversation would otherwise be sent as a second, conflicting instruction.
+        """
+        payload = [m.as_dict() for m in messages if m.role != "system"]
         if system:
             payload = [{"role": "system", "content": system}, *payload]
         resp = self._client.chat.completions.create(
             model=self.model, messages=payload, max_tokens=max_tokens, temperature=temperature
         )
+        if not resp.choices:
+            raise RuntimeError("OpenAI returned no choices")
         usage = resp.usage
         return LLMResponse(
             text=resp.choices[0].message.content or "",

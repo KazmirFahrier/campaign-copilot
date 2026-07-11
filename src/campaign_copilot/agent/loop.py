@@ -342,6 +342,10 @@ class Agent:
                         "ok": report.ok,
                         "checked": report.checked,
                         "ungrounded": [c.raw for c in report.ungrounded],
+                        # Claims kept only on a number from the question, not a query. The
+                        # residual grounding hole (R2-4) lives here; surfacing it is what makes
+                        # "measured, not closed" honest rather than a discarded value (R6-2).
+                        "context_only": [c.raw for c in report.context_only],
                     }
                 )
                 if report.ok:

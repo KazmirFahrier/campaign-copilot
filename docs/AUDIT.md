@@ -689,3 +689,94 @@ method would have found more than its own class. The honest extrapolation is not
 now clean." It is "the next class of defect needs the next method I have not run" — and the
 obvious remaining one is still the literal container: `docker build`, `docker compose up`, and a
 load test that holds many streams open at once.
+
+---
+
+# Audit, round six
+
+The first five rounds each changed the *environment*: different inputs, a fresh install, a real
+socket. This round changed the *lens* instead — read the code as an adversary reasoning about
+what the tests structurally cannot observe, and go straight at the paths nothing exercises.
+
+Three findings, plus a batch of probes that held up and are worth recording as verified.
+
+| # | Severity | Finding | Status |
+|---|---|---|---|
+| R6-1 | **P1** | The real LLM adapters have provider-parsing logic that no test touches; the OpenAI one duplicated the system message | fixed |
+| R6-2 | **P2** | `GroundingReport.context_only` was computed and surfaced nowhere — the same dead-measurement pattern earlier rounds named | fixed |
+| R6-3 | **P2** | The grounding extractor silently ignores spelled-out numbers | documented as a bounded limitation |
+
+## What held up (recorded so the audit is not only failures)
+
+- **The SQL guardrail is genuinely AST-based.** Probed with a CTE hiding a `DELETE ... RETURNING`,
+  a `read_csv` subquery, a set-returning function in `FROM`, `PRAGMA`, stacked statements, a
+  `UNION` to `sqlite_master`, and a qualified `main.read_csv`. Every one was blocked with the
+  right code. The two that passed — a `/* ; drop */` comment and `count(*)` — are correct to pass:
+  a comment is inert to the parser and `count` is a registered aggregate.
+- **Percent-of-ratio grounding is bounded, not loose.** A `9.70` fact grounds `970%` and a `0.05`
+  fact grounds `5%` (legitimate unit conversions), but `31.5%` against a `9.70` fact is blocked.
+  Intentional and correct.
+- **The oracle runs the real gate.** The eval oracle's answer passes through the same
+  `GroundingChecker` and `SqlGuard` a production turn does, not a shortcut. The ceiling it
+  certifies is the real pipeline's ceiling.
+- **`ContextOverflowError` cannot reach a user as a 500.** A single turn larger than the context
+  window raises, but the question is capped at 2000 chars against a 180k-token window, and the
+  service's worker turns any exception into a clean `error` event.
+
+## R6-1. The adapters were fiction-tested
+
+Every deterministic test in the suite drives a `ScriptedClient`, which returns canned text. The
+one thing the real `AnthropicClient` and `OpenAIClient` exist to do — translate a provider's
+response shape into an `LLMResponse` — was executed only against a live API key, and **no test
+imported either adapter.** Six phases of "the LLM core is tested" rested on a client that skips
+the code the other two clients are entirely made of.
+
+Reading them as an adversary surfaced a concrete bug. The Anthropic adapter strips history
+system-role messages (`m.role != "system"`) and passes the prompt via the `system` field. The
+OpenAI adapter did *not* strip them, and also prepended the `system` param — so a conversation
+carrying a system turn went to OpenAI with **two** system messages:
+
+```
+messages sent to OpenAI: ['system', 'system', 'user']
+```
+
+Small blast radius in practice — the agent never puts a system turn in history — but it is a real
+divergence between two clients that are supposed to be interchangeable, and it was invisible
+because neither adapter ran in a test. Fixed: the OpenAI adapter now strips history system turns
+like the Anthropic one, both guard against an empty `choices`/`content`, and `tests/test_llm_adapters.py`
+drives both against a mocked SDK — asserting the request they build and the response they parse.
+Mutation-checked: reverting the system-strip fails the test.
+
+## R6-2. A metric computed for no one
+
+`GroundingReport.context_only` names claims that survived only on a number from the question.
+Round two introduced it and wrote that it "can be surfaced and counted." It was computed on every
+check and read by nothing — no event, no metric, no eval column. The exact pattern this audit has
+flagged twice: `compress()` in round one, the appendix in round three. A measurement nobody reads
+is not a measurement.
+
+It is now on the `grounding` SSE event (and in the TypeScript union, which forced the test
+fixtures to include it — the exhaustiveness check doing its job). "Measured, not closed" is now a
+true statement about the residual grounding hole rather than an aspirational one.
+
+## R6-3. Spelled-out numbers
+
+The grounding extractor finds digits, currency, and percentages. It does not parse "nine point
+seven" or "one million", so a model that writes a fabricated figure *in words* is not caught. The
+exposure is narrow: everything the system generates is digits (`Figure.render()`, SQL results), so
+only a model free-typing a spelled-out invention slips through. A word-to-number parser was
+considered and rejected — it is a large ambiguous surface whose own failure modes would need
+grounding — and the limitation is now stated in the module docstring instead of left implied.
+
+## Standing count after six rounds
+
+Thirty-three findings. Twenty-nine fixed, four open and named (pinned facts unreachable,
+`failure-modes.md` unwritten, multi-turn unscored, and the spelled-out-number hole now documented
+as an accepted bound rather than an unknown).
+
+The six lenses: source-reading, adversarial inputs, auditing the audit, fresh install, real
+sockets, and reading for untested paths. R6-1 is the cleanest statement of the whole exercise's
+thesis: a test suite is evidence about the code it runs, and `ScriptedClient` was load-bearing
+proof that ran none of the adapter code it stood in for. The next unrun method remains the literal
+container, and after that, a live model behind `make eval-live` — the one path still validated by
+nothing but its own claim.

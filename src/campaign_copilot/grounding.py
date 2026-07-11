@@ -28,6 +28,16 @@ which is a rule rather than a fudge factor:
 
 Everything else is ungrounded and the answer does not ship.
 
+**Known limitation, documented rather than papered over (docs/AUDIT.md, R6-3).** Extraction is
+numeric: it finds digit sequences, currency, and percentages. It does *not* parse spelled-out
+numbers ("nine point seven", "one million"), so a model that writes a fabricated figure in
+words rather than digits is not caught. Every number this system *generates* is digits --
+``Figure.render()`` and the SQL results are always numeric -- so the exposure is limited to a
+model choosing, in free prose, to spell out a number it invented. A word-to-number parser was
+considered and rejected: it is a large, ambiguous surface (scales, fractions, ordinals,
+locales) whose own failure modes would need grounding. Constraining answers to digits is the
+cheaper guarantee.
+
 **Residual hole, stated plainly.** An agent that runs *some* query and then repeats a number
 from the question is still permitted. Distinguishing "repeating the threshold you asked about"
 from "asserting the number you fed me" needs the claim's grammatical role, not its value.

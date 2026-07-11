@@ -49,7 +49,7 @@ test("every event type has a description", () => {
     { type: "step", index: 0, action: "tool", reasoning: "why", request_id: "r" },
     { type: "tool_call", tool: "run_sql", arguments: { sql: "x" }, request_id: "r" },
     { type: "tool_result", tool: "run_sql", ok: false, error_code: "NOT_A_SELECT", preview: "", request_id: "r" },
-    { type: "grounding", ok: false, checked: 2, ungrounded: ["$412,000"], request_id: "r" },
+    { type: "grounding", ok: false, checked: 2, ungrounded: ["$412,000"], context_only: [], request_id: "r" },
     { type: "clarify", question: "blended?", request_id: "r" },
     { type: "answer", text: "a", request_id: "r" },
     { type: "error", reason: "internal", text: "boom", request_id: "r" },
@@ -60,7 +60,7 @@ test("every event type has a description", () => {
 
 test("a blocked answer names the offending number", () => {
   const message = describe({
-    type: "grounding", ok: false, checked: 2, ungrounded: ["$412,000"], request_id: "r",
+    type: "grounding", ok: false, checked: 2, ungrounded: ["$412,000"], context_only: [], request_id: "r",
   });
   assert.match(message, /\$412,000/);
   assert.match(message, /came from no query/);

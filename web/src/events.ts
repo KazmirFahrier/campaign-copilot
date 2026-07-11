@@ -12,7 +12,7 @@ export type AgentEvent =
   | { type: "step"; index: number; action: "tool" | "clarify" | "answer"; reasoning: string; request_id: string }
   | { type: "tool_call"; tool: string; arguments: Record<string, unknown>; request_id: string }
   | { type: "tool_result"; tool: string; ok: boolean; error_code: string | null; preview: string; request_id: string }
-  | { type: "grounding"; ok: boolean; checked: number; ungrounded: string[]; request_id: string }
+  | { type: "grounding"; ok: boolean; checked: number; ungrounded: string[]; context_only: string[]; request_id: string }
   | { type: "clarify"; question: string; request_id: string }
   | { type: "compressed"; turns: number; request_id: string }
   | { type: "answer"; text: string; request_id: string }
