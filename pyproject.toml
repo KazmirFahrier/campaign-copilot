@@ -74,7 +74,7 @@ ignore = ["D203", "D213", "ANN401"]
 convention = "google"
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.12"
 strict = true
 files = ["src/campaign_copilot"]
 warn_unreachable = true
