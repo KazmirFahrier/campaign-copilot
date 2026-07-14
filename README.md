@@ -22,6 +22,8 @@ layer, executing it in a sandbox, and refusing to state a number it cannot trace
 > rather than hidden. Each round used a method the previous four could not: source-reading,
 > adversarial inputs, auditing the audit, a fresh install, and real sockets.
 
+> **Companion project:** For the complementary MCP tool-platform layer—language-agnostic tool servers, sandboxed execution, multi-turn memory, orchestration, and document generation—see [`atlas-agent`](https://github.com/KazmirFahrier/atlas-agent). This repository goes deeper on semantic-layer correctness, governed metrics, numerical grounding, and LLM-over-SQL evaluation.
+
 ---
 
 ## The thesis
