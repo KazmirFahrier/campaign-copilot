@@ -7,7 +7,7 @@ import json
 import sys
 from pathlib import Path
 
-from campaign_copilot.evals.dataset import load_adversarial, load_golden
+from campaign_copilot.evals.dataset import load_adversarial, load_golden, load_multi_turn
 from campaign_copilot.evals.report import (
     BASELINE,
     check_regression,
@@ -45,9 +45,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-history", action="store_true")
     args = parser.parse_args(argv)
 
-    golden, adversarial = load_golden(), load_adversarial()
+    golden, adversarial, multi_turn = load_golden(), load_adversarial(), load_multi_turn()
     rows = [
-        EvalRunner(ablation=ablation).run_suite(golden, adversarial, policy=policy).as_dict()
+        EvalRunner(ablation=ablation)
+        .run_suite(golden, adversarial, multi_turn, policy=policy)
+        .as_dict()
         for ablation, policy in GRID
     ]
 

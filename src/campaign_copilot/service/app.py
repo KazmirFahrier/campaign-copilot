@@ -48,6 +48,7 @@ from campaign_copilot.memory import ConversationMemory
 from campaign_copilot.rag import HybridRetriever, build_corpus
 from campaign_copilot.semantic.layer import SemanticLayer
 from campaign_copilot.tools.python_exec import PythonSandbox, SandboxConfig, session_scope
+from campaign_copilot.tools.remember import RememberTool
 from campaign_copilot.tools.retrieve import SearchDocsTool
 from campaign_copilot.tools.sql import ListMetricsTool, QueryMetricsTool, RunSqlTool, Warehouse
 
@@ -384,9 +385,13 @@ def create_app(
                 # The sandbox reads the session from here, never from the model's arguments.
                 token = session_scope.set(body.session_id)
                 memory = sessions.get(body.session_id)
+                # `remember` is injected per request, bound to this session's memory. It
+                # must never live in the shared registry: a tool holding one session's
+                # memory inside a registry shared by every session is a cross-session
+                # write path (docs/AUDIT.md, P1-6b).
                 agent = Agent(
                     make_client(),
-                    registry,
+                    {**registry, "remember": RememberTool(memory=memory)},
                     memory,
                     checker=GroundingChecker(),
                     max_steps=config.max_steps,

@@ -15,11 +15,11 @@ confident, well-formatted claim that nothing supports.
 | 4 | **P1** | `python_exec`'s session id is model-controlled: cross-session namespace access | fixed: session is a server-set `ContextVar`, removed from the tool schema |
 | 5 | **P1** | `preexec_fn` in a threaded process: documented deadlock hazard | fixed: rlimits applied post-`exec` in `_runner.py`; `start_new_session=True` |
 | 6a | **P1** | Rolling summary never runs | fixed: `Agent.run` compresses when the budget demands it |
-| 6b | **P1** | Pinned facts are unreachable | **open**: needs a `remember` tool, which changes the action space and needs eval cases first |
+| 6b | **P1** | Pinned facts are unreachable | fixed (round eight): `remember` tool, eval cases first, per-session wiring |
 | 7 | **P2** | `Settings` reads the environment at import time | fixed: `default_factory` |
 | 8 | **P2** | `Metrics.latency_ms` is unbounded and mutated across threads | fixed: `deque(maxlen=1024)` + lock |
-| 9 | **P2** | `docs/failure-modes.md` was promised and never written | **open** |
-| 10 | **P2** | The multi-turn dataset is loaded and never scored | **open** |
+| 9 | **P2** | `docs/failure-modes.md` was promised and never written | fixed (round eight): written, every mode names its enforcement point |
+| 10 | **P2** | The multi-turn dataset is loaded and never scored | fixed (round eight): scored end to end, gated |
 | 11 | **P1** | *Found while fixing P0-3*: a failure in the stream worker's setup hung the SSE response forever | fixed: everything inside the `try`; test added |
 
 ---
@@ -845,3 +845,57 @@ anything reused, and only the sandbox namespace had slipped through. The methods
 the same two named since round four — the literal container, and a live model behind
 `make eval-live` — both requiring infrastructure this environment does not have. What can be
 reached from here has now been probed seven different ways.
+
+---
+
+# Remediation, round eight
+
+Not an audit round: no new lens, no new findings. This round closes the three findings every
+previous round left open and named, in the order the audit itself prescribed.
+
+## P1-6b, closed. The `remember` tool
+
+Round one's condition was specific: the tool "changes the action space and needs eval cases
+first." So the eval cases came first — the six multi-turn conversations now carry the scripted
+plan a competent agent would execute (`pin_on_turn`, `turn_sql`), exactly as golden cases carry
+the oracle's plan, and the suite failed before the tool existed. Then `tools/remember.py`:
+pin or retract, bound to the *same* `ConversationMemory` the agent renders from.
+
+Two design rules, both defensive. A pinned value licenses no numbers — pinning "last 28 days"
+must not entitle the agent to state 28, so results are built with `ToolResult.reference()` and
+`queries_run` stays false. And the store is capped (16 facts, 200 characters each), because the
+pinned block is injected into every prompt: unbounded, it is a prompt-stuffing channel an
+injected document could feed.
+
+The wiring honours R4-2's lesson about shared state: the service injects `{**registry,
+"remember": RememberTool(memory=memory)}` per request. The tool never enters the shared
+registry, because a tool holding one session's memory inside a registry shared by every session
+is a cross-session write path.
+
+## P2-10, closed. The multi-turn suite is scored
+
+`EvalRunner.run_multi_turn` drives each conversation through the real loop the way the service
+does it: one memory across the conversation, a fresh agent per turn. Each record asserts every
+mechanism at once — every turn ships, the pins are written, the pins reach the *rendered*
+system prompt (reachability, measured where it matters), the pins survive a forced compression
+that folds the establishing turn away, and the final answer matches gold and grounds every
+number. `multi_turn_pass_rate` and `pinned_fact_failures` join the regression gate with zero
+tolerance, and `check_regression` now reports a metric missing from a row as a failure rather
+than a `KeyError` — the gate is not exempt from the loud-failure rule either.
+
+The audit's claim that a scored multi-turn path "would have found P0-3, P1-4 and P1-6 in a
+single afternoon" is now a permanent property of CI rather than a counterfactual.
+
+## P2-9, closed. `docs/failure-modes.md`
+
+Twelve failure modes, each in the same shape: symptom, mechanism, *where it is enforced*, and
+residual risk. The discipline of the enforcement-point column is the point — a mitigation that
+cannot name its file is a hope. R2-4 (spelled-out numbers) appears there as what it is: measured,
+documented, not closed.
+
+## Standing count after eight rounds
+
+Thirty-four findings. Thirty-three fixed, one open and named: spelled-out-number grounding
+(R2-4), which remains a measured, documented bound of the grounding gate rather than a defect
+with a fix pending. The two unrun methods are unchanged — the literal container, and a live
+model behind `make eval-live`.

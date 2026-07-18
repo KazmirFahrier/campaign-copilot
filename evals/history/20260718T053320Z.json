@@ -18,7 +18,7 @@
     "clarification_recall": 1.0,
     "injection_block_rate": 1.0,
     "total_tokens": 5295,
-    "p50_latency_ms": 1.06
+    "p50_latency_ms": 1.08
   },
   {
     "ablation": "all_controls",
@@ -39,7 +39,7 @@
     "clarification_recall": 0.0,
     "injection_block_rate": 1.0,
     "total_tokens": 9097,
-    "p50_latency_ms": 1.0
+    "p50_latency_ms": 0.97
   },
   {
     "ablation": "no_grounding",
@@ -60,7 +60,7 @@
     "clarification_recall": 0.0,
     "injection_block_rate": 1.0,
     "total_tokens": 4636,
-    "p50_latency_ms": 0.8
+    "p50_latency_ms": 0.78
   },
   {
     "ablation": "no_metric_atoms",
@@ -81,7 +81,7 @@
     "clarification_recall": 0.0,
     "injection_block_rate": 0.8333,
     "total_tokens": 5713,
-    "p50_latency_ms": 1.25
+    "p50_latency_ms": 1.21
   },
   {
     "ablation": "no_semantic_layer",
@@ -102,7 +102,7 @@
     "clarification_recall": 0.0,
     "injection_block_rate": 1.0,
     "total_tokens": 9097,
-    "p50_latency_ms": 1.0
+    "p50_latency_ms": 0.99
   },
   {
     "ablation": "no_star_check",
@@ -123,7 +123,7 @@
     "clarification_recall": 0.0,
     "injection_block_rate": 0.9167,
     "total_tokens": 9097,
-    "p50_latency_ms": 1.0
+    "p50_latency_ms": 0.99
   },
   {
     "ablation": "nothing_but_sql",
@@ -144,6 +144,6 @@
     "clarification_recall": 0.0,
     "injection_block_rate": 0.75,
     "total_tokens": 3965,
-    "p50_latency_ms": 1.11
+    "p50_latency_ms": 1.14
   }
 ]

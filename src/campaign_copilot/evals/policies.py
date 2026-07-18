@@ -29,10 +29,10 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from campaign_copilot.evals.dataset import AdversarialCase, GoldenCase
+from campaign_copilot.evals.dataset import AdversarialCase, GoldenCase, MultiTurnCase
 from campaign_copilot.llm.client import LLMResponse, Message, Usage
 
-__all__ = ["CompliantPolicy", "NaivePolicy", "OraclePolicy"]
+__all__ = ["CompliantPolicy", "MultiTurnPolicy", "NaivePolicy", "OraclePolicy"]
 
 _NUMBER = re.compile(r"-?\d+\.\d+|-?\d+")
 
@@ -180,6 +180,55 @@ class NaivePolicy(_PolicyBase):
             _step("answer", answer=f"The value is {number}."),
             messages,
         )
+
+
+@dataclass
+class MultiTurnPolicy(_PolicyBase):
+    """Drives one turn of a conversation the way a competent agent would.
+
+    The runner constructs one per turn, sharing the agent's memory across turns. The
+    policy pins the standing constraints the case says a competent agent would pin, runs
+    the turn's scripted SQL, and answers with what came back. Like the oracle, it is a
+    ceiling: what it measures is not the policy but whether the *system* -- the remember
+    tool, the pinned block, compression, the guardrail, grounding -- lets competent
+    multi-turn behaviour succeed end to end.
+    """
+
+    case: MultiTurnCase = None  # type: ignore[assignment]
+    turn: int = 0
+    model: str = "policy:multi_turn"
+
+    def _pins(self) -> list[tuple[str, str]]:
+        if self.case.pin_on_turn != self.turn:
+            return []
+        return sorted(self.case.expects_pinned.items())
+
+    def complete(
+        self,
+        messages: Sequence[Message],
+        *,
+        system: str | None = None,
+        max_tokens: int = 1024,
+        temperature: float = 0.0,
+    ) -> LLMResponse:
+        """Pin first, then query, then answer. Tool results seen so far index the plan."""
+        results = _tool_results(messages)
+        pins = self._pins()
+
+        if len(results) < len(pins):
+            key, value = pins[len(results)]
+            return self._respond(_tool("remember", key=key, value=value), messages)
+
+        sql = self.case.turn_sql[self.turn] if self.case.turn_sql else None
+        if sql is not None and len(results) < len(pins) + 1:
+            return self._respond(_tool("run_sql", sql=sql), messages)
+
+        if sql is None:
+            answer = "Understood. I will apply that to every following question."
+        else:
+            number = _last_number(results[-1])
+            answer = f"The value is {number}." if number else "The query returned no rows."
+        return self._respond(_step("answer", answer=answer), messages)
 
 
 @dataclass

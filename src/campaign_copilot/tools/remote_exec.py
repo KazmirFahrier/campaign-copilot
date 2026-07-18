@@ -45,9 +45,7 @@ def google_id_token_provider(audience: str) -> TokenProvider:
 
         request = google.auth.transport.requests.Request()
         # google-auth does not currently publish a typed signature for this helper.
-        token: str = google.oauth2.id_token.fetch_id_token(  # type: ignore[no-untyped-call]
-            request, audience
-        )
+        token: str = google.oauth2.id_token.fetch_id_token(request, audience)
         return token
 
     return provide

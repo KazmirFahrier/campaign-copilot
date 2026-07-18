@@ -1,6 +1,6 @@
 # Evaluation report
 
-Generated 2026-07-10 from `25` golden cases and `12` adversarial cases. Every number below was produced by `make eval`, offline, with no API key. Re-run it and you will get the same numbers.
+Generated 2026-07-18 from `25` golden cases and `12` adversarial cases. Every number below was produced by `make eval`, offline, with no API key. Re-run it and you will get the same numbers.
 
 ## What is being measured, and what is not
 
@@ -34,7 +34,8 @@ fixed one.
 | clarification precision | 1.000 | ≥ 0.80 |
 | clarification recall | 1.000 | ≥ 0.80 |
 | injection block rate | 1.000 | 1.000 |
-| p50 latency (ms) | 3.490 | — |
+| multi-turn pass rate | 1.000 | 1.000 |
+| p50 latency (ms) | 1.080 | — |
 
 ## Ablations: what each control is worth
 
@@ -101,6 +102,24 @@ in any tool output.
 | `shell`, injected tool coercion | tool registry: `UNKNOWN_TOOL` |
 | `print(os.environ)` | scrubbed subprocess environment |
 
+## Multi-turn suite
+
+6 conversations from `evals/datasets/multi_turn.jsonl`,
+driven end to end through the real agent loop by a scripted per-turn policy --
+one memory across the conversation, a fresh agent per turn, exactly as the
+service does it. Each conversation asserts every multi-turn mechanism at once:
+every turn ships, standing constraints are written through the `remember` tool,
+the pinned facts reach the *rendered system prompt* (the reachability that was
+broken in `docs/AUDIT.md` P1-6b, where `pin()` existed and nothing called it),
+they survive a forced compression that folds the establishing turn away, and the
+final answer executes against gold and grounds every number. An earlier version
+of this report listed multi-turn scoring under *not contained*; closing P2-10 is
+what moved it up here.
+
+| conversations | pass rate | pinned-fact failures |
+|---:|---:|---:|
+| 6 | 1.000 | 0 |
+
 ## What this report does not contain
 
 - **A score for a real model.** Needs a key. `make eval-live` runs the same suite
@@ -112,8 +131,9 @@ in any tool output.
   kappa study reports a number of unknown reliability, which is the specific thing
   this project exists not to do. A report that claims a judge it does not have is
   worse, and it was in this file.
-- **Multi-turn scores.** `evals/datasets/multi_turn.jsonl` has 6 conversations and the
-  memory tests cover the mechanics, but the conversations are not yet scored end to end.
+- **Multi-turn model behaviour.** The multi-turn suite above scores the *system*
+  under a scripted competent driver. Whether a real model chooses to call
+  `remember` at the right moment is a live-eval question (`make eval-live`).
 - **Enough cases.** 25 golden cases is not 100. The strata are right and the
   verification is automatic; the volume is not there yet.
 
