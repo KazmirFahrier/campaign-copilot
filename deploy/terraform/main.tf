@@ -74,6 +74,7 @@ resource "google_project_service" "required" {
     "monitoring.googleapis.com",
     "run.googleapis.com",
     "secretmanager.googleapis.com",
+    "servicedirectory.googleapis.com",
   ])
 
   service            = each.value
@@ -153,8 +154,9 @@ resource "google_compute_subnetwork" "api" {
 }
 
 # Cloud NAT would make calls to the executor's public run.app address arrive from an external
-# source, which internal ingress correctly rejects. Resolve run.app through Google's private
-# VIPs so service to service traffic stays on the VPC and is classified as internal.
+# source, which internal ingress correctly rejects. A Private Service Connect endpoint gives
+# run.app an internal address in this VPC, so service to service traffic is classified as
+# internal without exposing the executor.
 resource "google_dns_managed_zone" "run_app_private" {
   name        = "cc-run-app-private"
   dns_name    = "run.app."
@@ -170,12 +172,32 @@ resource "google_dns_managed_zone" "run_app_private" {
   depends_on = [google_project_service.required]
 }
 
+resource "google_compute_global_address" "google_apis" {
+  name         = "cc-google-apis-ip"
+  address_type = "INTERNAL"
+  purpose      = "PRIVATE_SERVICE_CONNECT"
+  network      = google_compute_network.vpc.id
+  address      = "10.9.0.5"
+}
+
+resource "google_compute_global_forwarding_rule" "google_apis" {
+  name                  = "ccgoogleapis"
+  target                = "all-apis"
+  network               = google_compute_network.vpc.id
+  ip_address            = google_compute_global_address.google_apis.id
+  load_balancing_scheme = ""
+
+  depends_on = [google_project_service.required]
+}
+
 resource "google_dns_record_set" "run_app_private_vip" {
   managed_zone = google_dns_managed_zone.run_app_private.name
   name         = google_dns_managed_zone.run_app_private.dns_name
   type         = "A"
   ttl          = 300
-  rrdatas      = ["199.36.153.8", "199.36.153.9", "199.36.153.10", "199.36.153.11"]
+  rrdatas      = [google_compute_global_address.google_apis.address]
+
+  depends_on = [google_compute_global_forwarding_rule.google_apis]
 }
 
 resource "google_dns_record_set" "run_app_wildcard" {
@@ -263,7 +285,7 @@ resource "google_cloud_run_v2_service" "api" {
     max_instance_request_concurrency = 16
     labels = {
       release        = var.image_tag
-      network_config = "private-dns-v2"
+      network_config = "private-psc-v1"
     }
 
     # Conversation memory is intentionally in-process. One instance makes that contract
