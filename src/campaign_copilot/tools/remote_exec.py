@@ -74,7 +74,7 @@ class RemoteSandbox:
         if self.token_provider is None:
             return {}
         token = self.token_provider()
-        return {"Authorization": f"Bearer {token}"} if token else {}
+        return {"X-Serverless-Authorization": f"Bearer {token}"} if token else {}
 
     def run(self, **kwargs: Any) -> ToolResult:
         """POST the cell to the executor and translate its verdict back into a ToolResult."""

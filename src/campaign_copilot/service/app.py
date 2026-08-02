@@ -439,7 +439,7 @@ def create_app(
 
                     token = google_id_token_provider(config.executor_audience)()
                     if token:
-                        headers["Authorization"] = f"Bearer {token}"
+                        headers["X-Serverless-Authorization"] = f"Bearer {token}"
                 response = httpx.get(
                     f"{config.executor_url}/healthz", timeout=2.0, headers=headers
                 )

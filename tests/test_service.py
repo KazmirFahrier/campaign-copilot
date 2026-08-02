@@ -520,7 +520,7 @@ def test_the_remote_sandbox_authenticates_when_a_token_provider_is_configured() 
     seen: list[str | None] = []
 
     def capture(request: httpx.Request) -> httpx.Response:
-        seen.append(request.headers.get("Authorization"))
+        seen.append(request.headers.get("X-Serverless-Authorization"))
         return httpx.Response(200, json={"ok": True, "content": "42", "data": {}})
 
     remote = RemoteSandbox(
@@ -551,7 +551,7 @@ def test_an_unauthenticated_executor_gets_no_header() -> None:
     seen: list[str | None] = []
 
     def capture(request: httpx.Request) -> httpx.Response:
-        seen.append(request.headers.get("Authorization"))
+        seen.append(request.headers.get("X-Serverless-Authorization"))
         return httpx.Response(200, json={"ok": True, "content": "42", "data": {}})
 
     remote = RemoteSandbox(
