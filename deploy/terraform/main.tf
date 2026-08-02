@@ -74,7 +74,6 @@ resource "google_project_service" "required" {
     "monitoring.googleapis.com",
     "run.googleapis.com",
     "secretmanager.googleapis.com",
-    "servicedirectory.googleapis.com",
   ])
 
   service            = each.value
@@ -153,61 +152,6 @@ resource "google_compute_subnetwork" "api" {
   private_ip_google_access = true
 }
 
-# Cloud NAT would make calls to the executor's public run.app address arrive from an external
-# source, which internal ingress correctly rejects. A Private Service Connect endpoint gives
-# run.app an internal address in this VPC, so service to service traffic is classified as
-# internal without exposing the executor.
-resource "google_dns_managed_zone" "run_app_private" {
-  name        = "cc-run-app-private"
-  dns_name    = "run.app."
-  description = "Private Google Access routing for internal Cloud Run calls."
-  visibility  = "private"
-
-  private_visibility_config {
-    networks {
-      network_url = google_compute_network.vpc.id
-    }
-  }
-
-  depends_on = [google_project_service.required]
-}
-
-resource "google_compute_global_address" "google_apis" {
-  name         = "cc-google-apis-ip"
-  address_type = "INTERNAL"
-  purpose      = "PRIVATE_SERVICE_CONNECT"
-  network      = google_compute_network.vpc.id
-  address      = "10.9.0.5"
-}
-
-resource "google_compute_global_forwarding_rule" "google_apis" {
-  name                  = "ccgoogleapis"
-  target                = "all-apis"
-  network               = google_compute_network.vpc.id
-  ip_address            = google_compute_global_address.google_apis.id
-  load_balancing_scheme = ""
-
-  depends_on = [google_project_service.required]
-}
-
-resource "google_dns_record_set" "run_app_private_vip" {
-  managed_zone = google_dns_managed_zone.run_app_private.name
-  name         = google_dns_managed_zone.run_app_private.dns_name
-  type         = "A"
-  ttl          = 300
-  rrdatas      = [google_compute_global_address.google_apis.address]
-
-  depends_on = [google_compute_global_forwarding_rule.google_apis]
-}
-
-resource "google_dns_record_set" "run_app_wildcard" {
-  managed_zone = google_dns_managed_zone.run_app_private.name
-  name         = "*.${google_dns_managed_zone.run_app_private.dns_name}"
-  type         = "CNAME"
-  ttl          = 300
-  rrdatas      = [google_dns_managed_zone.run_app_private.dns_name]
-}
-
 resource "google_compute_router" "api" {
   name    = "cc-api-router"
   region  = var.region
@@ -233,8 +177,9 @@ resource "google_cloud_run_v2_service" "executor" {
   name     = "cc-executor"
   location = var.region
 
-  # Only reachable from inside the project. The public internet cannot POST arbitrary Python.
-  ingress = "INGRESS_TRAFFIC_INTERNAL_ONLY"
+  # The endpoint is routable, but Cloud Run IAM grants invocation only to the api service
+  # account. The executor still has no credentials and no network egress.
+  ingress = "INGRESS_TRAFFIC_ALL"
 
   template {
     service_account                  = google_service_account.executor.email
@@ -285,7 +230,7 @@ resource "google_cloud_run_v2_service" "api" {
     max_instance_request_concurrency = 16
     labels = {
       release        = var.image_tag
-      network_config = "private-psc-v2"
+      network_config = "iam-private-v1"
     }
 
     # Conversation memory is intentionally in-process. One instance makes that contract
@@ -384,8 +329,6 @@ resource "google_cloud_run_v2_service" "api" {
 
   depends_on = [
     google_compute_router_nat.api,
-    google_dns_record_set.run_app_private_vip,
-    google_dns_record_set.run_app_wildcard,
     google_project_iam_member.api_uses_vertex,
     google_secret_manager_secret_iam_member.api_reads_bearer_token,
     google_cloud_run_v2_service_iam_member.api_invokes_executor,
