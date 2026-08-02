@@ -72,6 +72,14 @@ def test_booleans_are_not_numeric_facts() -> None:
     assert ToolResult.success("x", flag=True).numeric_facts() == []
 
 
+def test_python_stdout_is_promoted_to_structured_numeric_evidence() -> None:
+    from campaign_copilot.grounding import extract_numbers
+
+    facts = [float(claim.value) for claim in extract_numbers("result: 42\nrate: 3.5%")]
+    result = ToolResult.success("result: 42\nrate: 3.5%", stdout="result", facts=facts)
+    assert result.numeric_facts() == [42.0, 3.5]
+
+
 def test_warehouse_strings_are_fenced_and_cannot_close_their_fence() -> None:
     rendered = render_table(
         ["campaign", "spend"],

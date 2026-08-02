@@ -39,6 +39,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar
 
+from campaign_copilot.grounding import extract_numbers
 from campaign_copilot.tools.base import ToolResult, ToolSpec
 
 __all__ = ["PythonSandbox", "SandboxConfig", "session_scope"]
@@ -228,6 +229,7 @@ class PythonSandbox:
         return ToolResult.success(
             content,
             stdout=stdout,
+            facts=[float(claim.value) for claim in extract_numbers(stdout)],
             variables=sorted(outcome["namespace"]),
             dropped=sorted(outcome["dropped"]),
             truncated=truncated,
