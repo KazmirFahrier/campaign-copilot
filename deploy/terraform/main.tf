@@ -36,6 +36,10 @@ provider "google" {
   region  = var.region
 }
 
+data "google_project" "current" {
+  project_id = var.project_id
+}
+
 variable "project_id" {
   type        = string
   description = "GCP project id."
@@ -61,6 +65,7 @@ locals {
   repo           = "${var.region}-docker.pkg.dev/${var.project_id}/campaign-copilot"
   api_image      = "${local.repo}/api:${var.image_tag}"
   executor_image = "${local.repo}/executor:${var.image_tag}"
+  executor_url   = "https://cc-executor-${data.google_project.current.number}.${var.region}.run.app"
 }
 
 resource "google_project_service" "required" {
@@ -254,12 +259,12 @@ resource "google_cloud_run_v2_service" "api" {
 
       env {
         name  = "CC_EXECUTOR_URL"
-        value = google_cloud_run_v2_service.executor.uri
+        value = local.executor_url
       }
 
       env {
         name  = "CC_EXECUTOR_AUDIENCE"
-        value = google_cloud_run_v2_service.executor.uri
+        value = local.executor_url
       }
 
       env {
