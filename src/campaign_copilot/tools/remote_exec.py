@@ -35,7 +35,7 @@ def google_id_token_provider(audience: str) -> TokenProvider:
     The Terraform sets the executor to `INGRESS_TRAFFIC_INTERNAL_ONLY` and grants the api's
     service account `roles/run.invoker`. Cloud Run enforces that binding by demanding an
     identity token on every request. An earlier version of this client sent none, so the first
-    `python_exec` call in production would have returned 403 and `/readyz` would have reported
+    `python_exec` call in production would have returned 403 and `/ready` would have reported
     the executor down forever (docs/AUDIT.md, P0-2).
 
     `terraform validate` passing said nothing about whether the two services could talk.

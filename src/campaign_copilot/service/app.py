@@ -8,8 +8,8 @@ carries those events, and the last one carries the answer.
 
 Operational shape:
 
-* `/healthz` is liveness: the process is up. It touches nothing.
-* `/readyz` is readiness: the warehouse answers and the executor answers. Cloud Run must not
+* `/health` is liveness: the process is up. It touches nothing.
+* `/ready` is readiness: the warehouse answers and the executor answers. Cloud Run must not
   route traffic to a revision whose dependencies are down, and conflating the two probes is
   how a bad revision takes an outage with it.
 * Every request carries an `X-Request-ID`, generated if absent, echoed on the response, bound
@@ -424,13 +424,15 @@ def create_app(
         )
         return response
 
-    @app.get("/healthz")
-    def healthz() -> dict[str, str]:
+    @app.get("/health")
+    @app.get("/healthz", include_in_schema=False)
+    def health() -> dict[str, str]:
         """Liveness. Touches nothing: a dependency outage must not restart the process."""
         return {"status": "ok"}
 
-    @app.get("/readyz")
-    def readyz() -> JSONResponse:
+    @app.get("/ready")
+    @app.get("/readyz", include_in_schema=False)
+    def ready() -> JSONResponse:
         """Readiness. The warehouse must answer; the executor, if configured, must answer."""
         checks: dict[str, str] = {}
         try:
@@ -453,7 +455,7 @@ def create_app(
                     if token:
                         headers["X-Serverless-Authorization"] = f"Bearer {token}"
                 response = httpx.get(
-                    f"{config.executor_url}/healthz", timeout=2.0, headers=headers
+                    f"{config.executor_url}/health", timeout=2.0, headers=headers
                 )
                 response.raise_for_status()
                 checks["executor"] = "ok"

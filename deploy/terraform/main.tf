@@ -247,7 +247,7 @@ resource "google_cloud_run_v2_service" "executor" {
 
       startup_probe {
         http_get {
-          path = "/healthz"
+          path = "/health"
         }
         failure_threshold = 3
         period_seconds    = 5
@@ -358,14 +358,14 @@ resource "google_cloud_run_v2_service" "api" {
       # should drain a revision, not restart it in a loop.
       liveness_probe {
         http_get {
-          path = "/healthz"
+          path = "/health"
         }
         period_seconds = 30
       }
 
       startup_probe {
         http_get {
-          path = "/readyz"
+          path = "/ready"
         }
         failure_threshold = 6
         period_seconds    = 5
@@ -429,7 +429,7 @@ resource "google_monitoring_uptime_check_config" "api_ready" {
   }
 
   http_check {
-    path         = "/readyz"
+    path         = "/ready"
     port         = 443
     use_ssl      = true
     validate_ssl = true

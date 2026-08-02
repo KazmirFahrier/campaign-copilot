@@ -82,12 +82,12 @@ def _events(response: httpx.Response) -> list[dict[str, Any]]:
 def test_liveness_touches_nothing() -> None:
     """A dependency outage must not restart the process."""
     client = _app([])
-    assert client.get("/healthz").json() == {"status": "ok"}
+    assert client.get("/health").json() == {"status": "ok"}
 
 
 @pytest.mark.skipif(not DB.exists(), reason="run `make warehouse`")
 def test_readiness_checks_the_warehouse() -> None:
-    response = _app([]).get("/readyz")
+    response = _app([]).get("/ready")
     assert response.status_code == 200
     assert response.json()["checks"]["warehouse"] == "ok"
 
@@ -99,7 +99,7 @@ def test_readiness_fails_when_the_warehouse_is_missing() -> None:
         client_factory=lambda: ScriptedClient([]),
         tools={},
     )
-    response = TestClient(app).get("/readyz")
+    response = TestClient(app).get("/ready")
     assert response.status_code == 503
     assert not response.json()["ready"]
 
@@ -108,18 +108,18 @@ def test_readiness_fails_when_the_warehouse_is_missing() -> None:
 
 
 def test_a_request_id_is_generated_and_echoed() -> None:
-    response = _app([]).get("/healthz")
+    response = _app([]).get("/health")
     assert len(response.headers["X-Request-ID"]) == 16
 
 
 def test_a_supplied_request_id_is_preserved() -> None:
-    response = _app([]).get("/healthz", headers={"X-Request-ID": "abc123"})
+    response = _app([]).get("/health", headers={"X-Request-ID": "abc123"})
     assert response.headers["X-Request-ID"] == "abc123"
 
 
 def test_an_invalid_request_id_is_replaced_before_it_reaches_logs() -> None:
     invalid = "a" * 100
-    response = _app([]).get("/healthz", headers={"X-Request-ID": invalid})
+    response = _app([]).get("/health", headers={"X-Request-ID": invalid})
     assert response.headers["X-Request-ID"] != invalid
     assert len(response.headers["X-Request-ID"]) == 16
 
@@ -692,7 +692,7 @@ def test_metrics_expose_a_cancelled_counter() -> None:
 def test_readiness_reports_the_executor_when_one_is_configured() -> None:
     """docs/AUDIT.md, R5-2, verified over real HTTP and pinned here.
 
-    /readyz must fail closed when a configured dependency is down; /healthz must not, or a
+    /ready must fail closed when a configured dependency is down; /health must not, or a
     dependency outage restarts the process instead of draining the revision.
     """
     app = create_app(
@@ -701,10 +701,10 @@ def test_readiness_reports_the_executor_when_one_is_configured() -> None:
         tools={},
     )
     client = TestClient(app)
-    body = client.get("/readyz").json()
+    body = client.get("/ready").json()
     assert body["ready"] is False
     assert "executor" in body["checks"]
-    assert client.get("/healthz").status_code == 200
+    assert client.get("/health").status_code == 200
 
 
 def test_question_numbers_are_blocked_even_after_a_query() -> None:

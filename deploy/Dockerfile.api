@@ -36,5 +36,5 @@ ENV PYTHONUNBUFFERED=1 \
 # Without the second, Cloud Run's invoker binding rejects every call to the executor.
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=3s \
-  CMD python -c "import httpx;httpx.get('http://localhost:8080/healthz').raise_for_status()"
+  CMD python -c "import httpx;httpx.get('http://localhost:8080/health').raise_for_status()"
 CMD ["sh", "-c", "uvicorn campaign_copilot.service.app:create_app --factory --host 0.0.0.0 --port ${PORT:-8080}"]

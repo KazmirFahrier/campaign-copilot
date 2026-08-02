@@ -137,8 +137,9 @@ def create_app(
             return JSONResponse({"detail": "Authentication required"}, status_code=401)
         return await call_next(request)
 
-    @app.get("/healthz")
-    def healthz() -> dict[str, str]:
+    @app.get("/health")
+    @app.get("/healthz", include_in_schema=False)
+    def health() -> dict[str, str]:
         return {"status": "ok"}
 
     @app.post("/exec", response_model=ExecResponse)
