@@ -261,6 +261,10 @@ resource "google_cloud_run_v2_service" "api" {
   template {
     service_account                  = google_service_account.api.email
     max_instance_request_concurrency = 16
+    labels = {
+      release        = var.image_tag
+      network_config = "private-dns-v2"
+    }
 
     # Conversation memory is intentionally in-process. One instance makes that contract
     # correct and explicit. Horizontal scale requires a shared session backend first.
