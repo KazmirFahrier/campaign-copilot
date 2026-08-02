@@ -44,7 +44,7 @@ from pydantic import BaseModel, Field
 from campaign_copilot.agent.loop import Agent
 from campaign_copilot.grounding import GroundingChecker
 from campaign_copilot.guardrails.sql_guard import SqlGuard, SqlGuardConfig
-from campaign_copilot.llm.client import AnthropicClient, LLMClient
+from campaign_copilot.llm.client import AnthropicClient, GeminiClient, LLMClient, OpenAIClient
 from campaign_copilot.llm.tokens import ContextBudget
 from campaign_copilot.memory import ConversationMemory
 from campaign_copilot.rag import HybridRetriever, build_corpus
@@ -110,7 +110,14 @@ class Settings:
     executor_audience: str | None = field(
         default_factory=lambda: os.getenv("CC_EXECUTOR_AUDIENCE") or None
     )
+    llm_provider: str = field(default_factory=lambda: os.getenv("CC_LLM_PROVIDER", "anthropic"))
     model: str = field(default_factory=lambda: os.getenv("CC_MODEL", "claude-sonnet-4-5"))
+    google_cloud_project: str | None = field(
+        default_factory=lambda: os.getenv("GOOGLE_CLOUD_PROJECT") or None
+    )
+    google_cloud_location: str = field(
+        default_factory=lambda: os.getenv("GOOGLE_CLOUD_LOCATION", "global")
+    )
     max_steps: int = field(default_factory=lambda: int(os.getenv("CC_MAX_STEPS", "8")))
     context_window: int = field(
         default_factory=lambda: int(os.getenv("CC_CONTEXT_WINDOW", "180000"))
@@ -135,6 +142,8 @@ class Settings:
                 "CC_ENVIRONMENT must be development, test, or production; unknown values "
                 "must not bypass production checks."
             )
+        if self.llm_provider not in {"anthropic", "gemini", "openai"}:
+            raise ValueError("CC_LLM_PROVIDER must be anthropic, gemini, or openai.")
         if self.environment != "production":
             return
         missing: list[str] = []
@@ -148,6 +157,8 @@ class Settings:
             missing.append("CC_EXECUTOR_URL (HTTPS required)")
         if not self.executor_audience:
             missing.append("CC_EXECUTOR_AUDIENCE")
+        if self.llm_provider == "gemini" and not self.google_cloud_project:
+            missing.append("GOOGLE_CLOUD_PROJECT")
         if self.release == "dev":
             missing.append("CC_RELEASE")
         if missing:
@@ -327,6 +338,14 @@ def create_app(
     capacity = threading.BoundedSemaphore(config.max_concurrent_requests)
 
     def default_client() -> LLMClient:
+        if config.llm_provider == "gemini":
+            return GeminiClient(
+                model=config.model,
+                project=config.google_cloud_project,
+                location=config.google_cloud_location,
+            )
+        if config.llm_provider == "openai":
+            return OpenAIClient(model=config.model)
         return AnthropicClient(model=config.model)
 
     make_client = client_factory or default_client
@@ -339,7 +358,14 @@ def create_app(
 
     sessions = SessionStore(new_memory, max_sessions=config.max_sessions)
 
-    app = FastAPI(title="campaign-copilot", version="0.1.0")
+    production = config.environment == "production"
+    app = FastAPI(
+        title="campaign-copilot",
+        version="0.1.0",
+        docs_url=None if production else "/docs",
+        redoc_url=None if production else "/redoc",
+        openapi_url=None if production else "/openapi.json",
+    )
     app.state.metrics = metrics
     app.state.settings = config
     app.state.sessions = sessions
@@ -438,6 +464,7 @@ def create_app(
         return {
             "service": "campaign-copilot",
             "release": config.release,
+            "provider": config.llm_provider,
             "model": config.model,
         }
 
@@ -466,6 +493,7 @@ def create_app(
                     **event,
                     "request_id": rid,
                     "release": config.release,
+                    "provider": config.llm_provider,
                     "model": config.model,
                 },
             )
