@@ -475,6 +475,12 @@ resource "google_monitoring_alert_policy" "api_errors" {
   display_name = "Campaign Copilot API errors"
   combiner     = "OR"
 
+  alert_strategy {
+    notification_rate_limit {
+      period = "300s"
+    }
+  }
+
   conditions {
     display_name = "At least one error log in five minutes"
     condition_matched_log {

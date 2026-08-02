@@ -344,12 +344,23 @@ class SemanticLayer:
                     )
             sql += "\nhaving " + "\n  and ".join(f"({h})" for h in having)
         if order_by:
-            if order_by not in {*dimensions, *(m.name for m in resolved)}:
+            parts = order_by.split()
+            if len(parts) == 2 and parts[1].lower() in {"asc", "desc"}:
+                order_column = parts[0]
+                descending = parts[1].lower() == "desc"
+            elif len(parts) == 1:
+                order_column = parts[0]
+            else:
+                raise SemanticError(
+                    f"Cannot order by {order_by!r}: use a selected column with optional "
+                    "ASC or DESC."
+                )
+            if order_column not in {*dimensions, *(m.name for m in resolved)}:
                 raise SemanticError(
                     f"Cannot order by {order_by!r}: it is neither a selected metric "
                     "nor a selected dimension."
                 )
-            sql += f"\norder by {order_by} {'desc' if descending else 'asc'}"
+            sql += f"\norder by {order_column} {'desc' if descending else 'asc'}"
         if limit is not None:
             sql += f"\nlimit {int(limit)}"
         return sql

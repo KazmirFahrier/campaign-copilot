@@ -359,7 +359,9 @@ class EvalRunner:
         tools: dict[str, Any] = {
             "run_sql": run_sql,
             "search_docs": _Recorder(SearchDocsTool(HybridRetriever.build(chunks))),
-            "list_metrics": _Recorder(ListMetricsTool(layer=self.layer)),
+            "list_metrics": _Recorder(
+                ListMetricsTool(layer=self.layer, warehouse=self.warehouse)
+            ),
             "python_exec": _Recorder(
                 PythonSandbox(
                     config=SandboxConfig(timeout_seconds=3, cpu_seconds=3, memory_mb=256)

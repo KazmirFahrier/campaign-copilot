@@ -103,6 +103,7 @@ class ListMetricsTool:
     """Tells the agent what it is allowed to compute, and where it must be careful."""
 
     layer: SemanticLayer
+    warehouse: Warehouse | None = None
 
     spec: ClassVar[ToolSpec] = ToolSpec(
         name="list_metrics",
@@ -115,7 +116,21 @@ class ListMetricsTool:
 
     def run(self, **kwargs: Any) -> ToolResult:
         """Return the registry, ambiguity notes included."""
-        lines = ["METRICS:"]
+        lines: list[str] = []
+        if self.warehouse is not None:
+            _, rows = self.warehouse.execute(
+                "select min(event_date), max(event_date) "
+                "from main_marts.campaign_performance_daily"
+            )
+            start, end = rows[0]
+            lines.extend(
+                [
+                    "DATA COVERAGE:",
+                    f"- event_date: {start} through {end}, inclusive",
+                    "",
+                ]
+            )
+        lines.append("METRICS:")
         for m in self.layer.metrics.values():
             lines.append(f"- {m.name} ({m.unit}): {m.description}")
             if m.ambiguity:
@@ -162,7 +177,16 @@ class QueryMetricsTool:
                         'Post-aggregation predicates on metric names, e.g. "roas > 1.0".'
                     ),
                 },
-                "order_by": {"type": "string"},
+                "order_by": {
+                    "type": "string",
+                    "description": (
+                        "Selected metric or dimension, optionally followed by ASC or DESC."
+                    ),
+                },
+                "descending": {
+                    "type": "boolean",
+                    "description": "Sort descending when order_by has no direction.",
+                },
                 "limit": {"type": "integer", "minimum": 1, "maximum": 10000},
             },
             "required": ["metrics"],
@@ -181,6 +205,7 @@ class QueryMetricsTool:
                 filters=filters,
                 having=kwargs.get("having", []) or [],
                 order_by=kwargs.get("order_by"),
+                descending=kwargs.get("descending", True),
                 limit=kwargs.get("limit", 100),
             )
         except SemanticError as err:

@@ -93,6 +93,15 @@ def test_list_metrics_surfaces_ambiguity(layer: SemanticLayer) -> None:
     assert "blended_roas" in result.content
 
 
+def test_list_metrics_surfaces_warehouse_date_coverage(
+    layer: SemanticLayer, warehouse: Warehouse
+) -> None:
+    result = ListMetricsTool(layer=layer, warehouse=warehouse).run()
+    assert result.ok
+    assert "DATA COVERAGE" in result.content
+    assert "2025-01-01 through 2025-12-31" in result.content
+
+
 # ------------------------------------------------------------------ safe path
 
 
@@ -101,6 +110,16 @@ def test_query_metrics_compiles_and_executes(query_tool: QueryMetricsTool) -> No
     assert result.ok
     assert result.data["row_count"] > 0
     assert "sum(revenue_usd)" in result.data["sql"]
+
+
+def test_query_metrics_accepts_an_explicit_sort_direction(
+    query_tool: QueryMetricsTool,
+) -> None:
+    result = query_tool.run(
+        metrics=["spend"], dimensions=["event_date"], order_by="event_date desc"
+    )
+    assert result.ok
+    assert "order by event_date desc" in result.data["sql"]
 
 
 def test_query_metrics_attaches_ambiguity_notes(query_tool: QueryMetricsTool) -> None:

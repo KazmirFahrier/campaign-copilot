@@ -329,7 +329,7 @@ def build_tools(settings: Settings) -> dict[str, Any]:
         python_exec = PythonSandbox(config=SandboxConfig())
 
     return {
-        "list_metrics": ListMetricsTool(layer=layer),
+        "list_metrics": ListMetricsTool(layer=layer, warehouse=warehouse),
         "query_metrics": QueryMetricsTool(layer=layer, warehouse=warehouse),
         "run_sql": RunSqlTool(guard=guard, warehouse=warehouse),
         "search_docs": SearchDocsTool(HybridRetriever.build(build_corpus(layer))),
