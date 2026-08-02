@@ -11,7 +11,7 @@ steps:
       - |
         pip install --no-cache-dir uv==0.11.30
         uv sync --frozen --extra warehouse
-        uv run make warehouse
+        uv run sh scripts/build_warehouse.sh
 
   - id: build-api
     name: gcr.io/cloud-builders/docker@sha256:f8b08c609fdc392ee6827ff3e1725e4980f7d96bde9f76f4695086405c96c147

@@ -5,8 +5,7 @@ install:
 	pre-commit install
 
 warehouse:                ## Regenerate raw tables, then build staging + marts
-	python -m campaign_copilot.warehouse.generate
-	cd warehouse && dbt deps --profiles-dir . && dbt build --profiles-dir .
+	sh scripts/build_warehouse.sh
 
 test:
 	pytest --cov --cov-report=term-missing
