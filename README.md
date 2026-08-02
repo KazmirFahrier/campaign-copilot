@@ -8,12 +8,15 @@ layer, executing it in a sandbox, and refusing to state a number it cannot trace
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-> **Status: production controls built and audited; nothing is deployed.** More than 280 Python
-> tests plus 7 TypeScript tests,
+> **Status: deployed and operational on Google Cloud.** More than 290 Python tests plus 7
+> TypeScript tests,
 > `mypy --strict`, `tsc --strict`, `terraform validate`. The evaluation regression gate,
 > the report provenance check, the Terraform validation and the TypeScript typecheck all run
-> in CI. **No `terraform apply` has been run and there is no live URL** —
-> [`docs/deploy.md`](docs/deploy.md) states exactly what is verified and what is not. See also
+> in CI. The production API is
+> [`cc-api`](https://cc-api-twkc6bjqaa-uc.a.run.app); application routes require a bearer token,
+> while public readiness is available at
+> [`/ready`](https://cc-api-twkc6bjqaa-uc.a.run.app/ready). The exact deployment evidence lives
+> in [`docs/deploy.md`](docs/deploy.md). See also
 > [`EVAL_REPORT.md`](EVAL_REPORT.md), [`docs/threat-model.md`](docs/threat-model.md), and
 > [`docs/AUDIT.md`](docs/AUDIT.md) and the
 > [`production runbook`](docs/runbook.md). The audit found a false
@@ -143,8 +146,10 @@ hallucination.
 ## The LLM core
 
 Nothing in `src/campaign_copilot/llm/` imports a vendor SDK at module scope. The agent
-depends on the `LLMClient` protocol; `AnthropicClient` and `OpenAIClient` import their SDKs
-lazily inside `__init__`, and `ScriptedClient` replays a fixed list of responses. That last
+depends on the `LLMClient` protocol; `AnthropicClient`, `GeminiClient`, and `OpenAIClient`
+import their SDKs lazily inside `__init__`, and `ScriptedClient` replays a fixed list of
+responses. Gemini uses Cloud workload identity, so the production service does not hold a
+vendor API key. That last
 one is why the Phase 4 regression suite can run the whole agent loop in CI, deterministically,
 with no key and no cost.
 
@@ -294,6 +299,13 @@ its counters cannot notice the grounding gate being deleted — which is exactly
 what `docs/AUDIT.md` R2-1 records. It also asserts that each control still *bites*: turning one
 off must make its failure counter rise, or the control is already gone.
 
+A bounded production run also exercised Gemini against two golden cases and one adversarial
+case. Execution accuracy, grounding rate, and injection block rate were all 1.0; no ungrounded
+or wrong but grounded answer shipped. Tool call F1 was 0.5333 and first try schema validity was
+0.5, which is why this is evidence of a live path rather than a replacement for the deterministic
+gate. The exact artifact is
+[`evals/live/20260802-f556190.json`](evals/live/20260802-f556190.json).
+
 ## Reporting
 
 `make report` generates a weekly client review as markdown and as a `.pptx`. The same rule as
@@ -332,11 +344,12 @@ Since Phase 2 the threat model has said that `python_exec` is a resource limiter
 security boundary — it runs as the same UID as the agent, so anything executing there can read
 `/proc/self/environ`. Phase 6 is that boundary, enforced in three independent places:
 
-1. **IAM.** The executor's service account has no role bindings. The Secret Manager accessor
-   binding names the api's account and only that one.
-2. **Network.** Egress through a subnet with no Cloud NAT; `INGRESS_TRAFFIC_INTERNAL_ONLY`.
-   The sandbox's socket rebinding becomes redundant rather than load-bearing — which is where
-   a defence-in-depth control is supposed to end up.
+1. **IAM.** The executor's service account has no role bindings. Secret Manager grants the API
+   identity access to the bearer token and executor signing key only.
+2. **Network and request identity.** Egress goes through a subnet with no Cloud NAT. `/exec`
+   and `/reset` require a fresh Ed25519 signature over the timestamp, nonce, method, path, and
+   body digest. The sandbox cannot call the internet, read a secret, or accept an unsigned or
+   replayed execution request.
 3. **The application.** `assert_no_secrets()` crash-loops the executor if a credential is ever
    visible in its environment. Infrastructure rots; an assertion does not.
 
@@ -349,14 +362,15 @@ someone waiting on a warehouse query wants is to watch the reasoning. The TypeSc
 models those events as a discriminated union with an exhaustive `never` check, so a new server
 event the renderer forgets to handle is a compile error rather than a blank panel.
 
-`/healthz` touches nothing (a dependency outage must not restart the process). `/readyz`
+`/health` touches nothing (a dependency outage must not restart the process). `/ready`
 checks the warehouse and the executor. `/metrics` exposes `ungrounded_blocked` — a counter
 stuck at zero forever means somebody switched the grounding gate off.
 
 Production mode fails closed unless bearer authentication, the isolated executor URL and
 audience, and an immutable release id are configured. Requests are admission controlled and
 return status 429 at capacity. Every SSE event carries the model and release identity. Terraform
-pins the API and executor to one warm instance because session state is local; the
+caps the API and executor at one instance because session state is local; both can scale to
+zero when idle. The
 [`production runbook`](docs/runbook.md) makes that capacity boundary, the service objectives,
 and the rollback procedure explicit.
 
@@ -370,8 +384,8 @@ and the rollback procedure explicit.
 | 3 | Hybrid RAG over schema and metric docs, grounded citations | ✅ done |
 | 4 | **Evaluation harness** — golden SQL, ablations, CI regression gate | ✅ done (κ study unrun) |
 | 5 | Document automation (markdown + pptx; Google adapter untested) | ✅ done |
-| 6 | Cloud Run + Terraform + TypeScript streaming UI | 🟨 built and validated; never applied |
-| 7 | Production hardening: auth, admission control, release identity, runbook, provenance bypass closure | ✅ built and tested; never applied |
+| 6 | Cloud Run services deployed and smoke tested; TypeScript streaming client CI validated | ✅ done |
+| 7 | Production hardening: auth, admission control, release identity, runbook, provenance bypass closure | ✅ deployed and monitored |
 
 Phase 4 is the point of the project. Everything before it exists to make the evaluation
 meaningful, and everything after it exists to make the evaluation observable in production.

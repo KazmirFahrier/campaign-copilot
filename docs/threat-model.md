@@ -82,7 +82,10 @@ service (`deploy/Dockerfile.executor`, `deploy/terraform/main.tf`) with:
 - **no egress** — Cloud Run VPC access routed through a subnet with no Cloud NAT, and
   `internal: true` in compose. The socket rebinding inside the sandbox is now redundant rather
   than load-bearing, which is where a defence-in-depth control belongs;
-- `INGRESS_TRAFFIC_INTERNAL_ONLY`, so the public internet cannot POST arbitrary Python;
+- a routable Cloud Run endpoint whose `/exec` and `/reset` routes require a fresh Ed25519
+  signature from the API. The signature binds the timestamp, nonce, method, path, and body
+  digest; stale, modified, unsigned, and replayed requests are rejected. Only the API can read
+  the private key from Secret Manager, while the executor receives the public key only;
 - no mounted application secret or warehouse and an isolated scratch filesystem. Cloud Run's
   platform filesystem is ephemeral, not read only, so the design does not claim otherwise;
 - a dedicated service identity with no IAM role bindings. Cloud Run still exposes platform

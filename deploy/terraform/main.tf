@@ -202,13 +202,19 @@ resource "google_compute_router_nat" "api" {
 resource "google_cloud_run_v2_service" "executor" {
   name     = "cc-executor"
   location = var.region
-  # An organization policy blocks the managed invoker check at the service edge. Execution
-  # routes are instead protected by replay protected Ed25519 signatures verified in the app.
+  # The managed invoker path returned 404 at the service edge in this project's policy
+  # context. Execution routes are protected by replay protected Ed25519 signatures in the app.
   invoker_iam_disabled = true
 
-  # The endpoint is routable, but Cloud Run IAM grants invocation only to the api service
-  # account. The executor still has no credentials and no network egress.
+  # The endpoint is routable so the API can reach it. The executor has no credentials or
+  # network egress, and its execution routes reject every unsigned or replayed request.
   ingress = "INGRESS_TRAFFIC_ALL"
+
+  lifecycle {
+    # Cloud Run reports an empty service level scaling block as zeros. The provider then tries
+    # to clear those computed defaults on every plan. Revision scaling remains managed below.
+    ignore_changes = [scaling]
+  }
 
   template {
     service_account                  = google_service_account.executor.email
@@ -261,12 +267,18 @@ resource "google_cloud_run_v2_service" "api" {
   location = var.region
   ingress  = "INGRESS_TRAFFIC_ALL"
 
+  lifecycle {
+    # Cloud Run reports an empty service level scaling block as zeros. The provider then tries
+    # to clear those computed defaults on every plan. Revision scaling remains managed below.
+    ignore_changes = [scaling]
+  }
+
   template {
     service_account                  = google_service_account.api.email
     max_instance_request_concurrency = 16
     labels = {
       release        = var.image_tag
-      network_config = "iam-private-v2"
+      network_config = "signed-executor-v1"
     }
 
     # Conversation memory is intentionally in-process. One instance makes that contract
