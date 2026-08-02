@@ -69,6 +69,7 @@ resource "google_project_service" "required" {
     "artifactregistry.googleapis.com",
     "cloudbuild.googleapis.com",
     "compute.googleapis.com",
+    "dns.googleapis.com",
     "logging.googleapis.com",
     "monitoring.googleapis.com",
     "run.googleapis.com",
@@ -149,6 +150,40 @@ resource "google_compute_subnetwork" "api" {
   region                   = var.region
   network                  = google_compute_network.vpc.id
   private_ip_google_access = true
+}
+
+# Cloud NAT would make calls to the executor's public run.app address arrive from an external
+# source, which internal ingress correctly rejects. Resolve run.app through Google's private
+# VIPs so service to service traffic stays on the VPC and is classified as internal.
+resource "google_dns_managed_zone" "run_app_private" {
+  name        = "cc-run-app-private"
+  dns_name    = "run.app."
+  description = "Private Google Access routing for internal Cloud Run calls."
+  visibility  = "private"
+
+  private_visibility_config {
+    networks {
+      network_url = google_compute_network.vpc.id
+    }
+  }
+
+  depends_on = [google_project_service.required]
+}
+
+resource "google_dns_record_set" "run_app_private_vip" {
+  managed_zone = google_dns_managed_zone.run_app_private.name
+  name         = google_dns_managed_zone.run_app_private.dns_name
+  type         = "A"
+  ttl          = 300
+  rrdatas      = ["199.36.153.8", "199.36.153.9", "199.36.153.10", "199.36.153.11"]
+}
+
+resource "google_dns_record_set" "run_app_wildcard" {
+  managed_zone = google_dns_managed_zone.run_app_private.name
+  name         = "*.${google_dns_managed_zone.run_app_private.dns_name}"
+  type         = "CNAME"
+  ttl          = 300
+  rrdatas      = [google_dns_managed_zone.run_app_private.dns_name]
 }
 
 resource "google_compute_router" "api" {
@@ -323,6 +358,8 @@ resource "google_cloud_run_v2_service" "api" {
 
   depends_on = [
     google_compute_router_nat.api,
+    google_dns_record_set.run_app_private_vip,
+    google_dns_record_set.run_app_wildcard,
     google_project_iam_member.api_uses_vertex,
     google_secret_manager_secret_iam_member.api_reads_bearer_token,
     google_cloud_run_v2_service_iam_member.api_invokes_executor,
@@ -433,22 +470,8 @@ resource "google_monitoring_alert_policy" "api_errors" {
 
   conditions {
     display_name = "At least one error log in five minutes"
-    condition_threshold {
-      filter          = "resource.type = \"cloud_run_revision\" AND metric.type = \"logging.googleapis.com/user/${google_logging_metric.api_errors.name}\""
-      comparison      = "COMPARISON_GT"
-      threshold_value = 0
-      duration        = "0s"
-
-      aggregations {
-        alignment_period     = "300s"
-        per_series_aligner   = "ALIGN_SUM"
-        cross_series_reducer = "REDUCE_SUM"
-        group_by_fields      = ["resource.label.service_name"]
-      }
-
-      trigger {
-        count = 1
-      }
+    condition_matched_log {
+      filter = "resource.type=\"cloud_run_revision\" AND resource.labels.service_name=\"cc-api\" AND severity>=ERROR"
     }
   }
 
@@ -530,7 +553,7 @@ resource "google_monitoring_dashboard" "production" {
                   }
                 }
               }
-              thresholds = [{ value = 1, color = "GREEN", direction = "ABOVE" }]
+              thresholds = [{ value = 1, color = "RED", direction = "BELOW" }]
             }
           }
         }
