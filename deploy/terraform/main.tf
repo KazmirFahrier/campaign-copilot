@@ -74,6 +74,7 @@ resource "google_project_service" "required" {
     "monitoring.googleapis.com",
     "run.googleapis.com",
     "secretmanager.googleapis.com",
+    "servicedirectory.googleapis.com",
   ])
 
   service            = each.value
