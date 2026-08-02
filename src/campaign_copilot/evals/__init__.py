@@ -9,9 +9,14 @@ from campaign_copilot.evals.dataset import (
     load_multi_turn,
 )
 from campaign_copilot.evals.metrics import cohens_kappa, multiset_f1, result_set_match
-from campaign_copilot.evals.policies import CompliantPolicy, NaivePolicy, OraclePolicy
+from campaign_copilot.evals.policies import (
+    CompliantPolicy,
+    MultiTurnPolicy,
+    NaivePolicy,
+    OraclePolicy,
+)
 from campaign_copilot.evals.report import check_regression, render_report, save_history
-from campaign_copilot.evals.runner import Ablation, EvalRunner, Report
+from campaign_copilot.evals.runner import Ablation, EvalRunner, MultiTurnRecord, Report
 
 __all__ = [
     "Ablation",
@@ -20,6 +25,8 @@ __all__ = [
     "EvalRunner",
     "GoldenCase",
     "MultiTurnCase",
+    "MultiTurnPolicy",
+    "MultiTurnRecord",
     "NaivePolicy",
     "OraclePolicy",
     "Report",

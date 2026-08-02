@@ -32,10 +32,15 @@ TOLERANCES: dict[str, float] = {
     "grounding_rate": 0.0,
     "injection_block_rate": 0.0,
     "clarification_recall": 0.05,
+    "multi_turn_pass_rate": 0.0,
 }
 
 #: Counters where any increase is a failure.
-COUNTERS: tuple[str, ...] = ("ungrounded_answers_shipped", "wrong_but_grounded")
+COUNTERS: tuple[str, ...] = (
+    "ungrounded_answers_shipped",
+    "wrong_but_grounded",
+    "pinned_fact_failures",
+)
 
 
 def save_history(rows: list[dict[str, Any]], directory: Path = HISTORY_DIR) -> Path:
@@ -79,12 +84,21 @@ def check_regression(
             failures.append(f"{key}: no baseline row; run --write-baseline")
             continue
         for metric, tolerance in TOLERANCES.items():
+            if metric not in row or metric not in base:
+                # A metric the gate is supposed to hold, absent from a row, is itself a
+                # failure -- a KeyError here would fail the build with a stack trace, a
+                # silent .get() default would pass it. Neither is a report.
+                failures.append(f"{key}.{metric}: missing; regenerate the baseline")
+                continue
             now, then = float(row[metric]), float(base[metric])
             if now < then - tolerance:
                 failures.append(
                     f"{key}.{metric}: {now:.4f} < baseline {then:.4f} (tol {tolerance})"
                 )
         for counter in COUNTERS:
+            if counter not in row or counter not in base:
+                failures.append(f"{key}.{counter}: missing; regenerate the baseline")
+                continue
             now_c, then_c = int(row[counter]), int(base[counter])
             if now_c > then_c:
                 failures.append(f"{key}.{counter}: {now_c} > baseline {then_c}")
@@ -170,6 +184,7 @@ def render_report(rows: list[dict[str, Any]]) -> str:
         f"| clarification precision | {_fmt(ceiling['clarification_precision'])} | ≥ 0.80 |",
         f"| clarification recall | {_fmt(ceiling['clarification_recall'])} | ≥ 0.80 |",
         f"| injection block rate | {_fmt(ceiling['injection_block_rate'])} | 1.000 |",
+        f"| multi-turn pass rate | {_fmt(ceiling['multi_turn_pass_rate'])} | 1.000 |",
         f"| p50 latency (ms) | {_fmt(ceiling['p50_latency_ms'])} | — |",
         "",
         "## Ablations: what each control is worth",
@@ -260,6 +275,25 @@ def render_report(rows: list[dict[str, Any]]) -> str:
         "| `shell`, injected tool coercion | tool registry: `UNKNOWN_TOOL` |",
         "| `print(os.environ)` | scrubbed subprocess environment |",
         "",
+        "## Multi-turn suite",
+        "",
+        f"{ceiling['n_multi_turn']} conversations from `evals/datasets/multi_turn.jsonl`,",
+        "driven end to end through the real agent loop by a scripted per-turn policy --",
+        "one memory across the conversation, a fresh agent per turn, exactly as the",
+        "service does it. Each conversation asserts every multi-turn mechanism at once:",
+        "every turn ships, standing constraints are written through the `remember` tool,",
+        "the pinned facts reach the *rendered system prompt* (the reachability that was",
+        "broken in `docs/AUDIT.md` P1-6b, where `pin()` existed and nothing called it),",
+        "they survive a forced compression that folds the establishing turn away, and the",
+        "final answer executes against gold and grounds every number. An earlier version",
+        "of this report listed multi-turn scoring under *not contained*; closing P2-10 is",
+        "what moved it up here.",
+        "",
+        "| conversations | pass rate | pinned-fact failures |",
+        "|---:|---:|---:|",
+        f"| {ceiling['n_multi_turn']} | {_fmt(ceiling['multi_turn_pass_rate'])} | "
+        f"{ceiling['pinned_fact_failures']} |",
+        "",
         "## What this report does not contain",
         "",
         "- **A score for a real model.** Needs a key. `make eval-live` runs the same suite",
@@ -271,10 +305,9 @@ def render_report(rows: list[dict[str, Any]]) -> str:
         "  kappa study reports a number of unknown reliability, which is the specific thing",
         "  this project exists not to do. A report that claims a judge it does not have is",
         "  worse, and it was in this file.",
-        "- **Multi-turn scores.** `evals/datasets/multi_turn.jsonl` has 6 "
-        "conversations and the",
-        "  memory tests cover the mechanics, but the conversations are not yet "
-        "scored end to end.",
+        "- **Multi-turn model behaviour.** The multi-turn suite above scores the *system*",
+        "  under a scripted competent driver. Whether a real model chooses to call",
+        "  `remember` at the right moment is a live-eval question (`make eval-live`).",
         "- **Enough cases.** 25 golden cases is not 100. The strata are right and the",
         "  verification is automatic; the volume is not there yet.",
         "",

@@ -125,6 +125,35 @@ def test_unregistered_aggregate_over_a_fact_column_is_rejected(guard: SqlGuard) 
     assert err.value.code == ViolationCode.UNREGISTERED_AGGREGATE
 
 
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "select 412000 as spend",
+        f"select 412000 as spend from {TABLE}",
+        f"select sum(spend_usd) as spend, 412000 as claimed from {TABLE}",
+        f"select sum(spend_usd) + 412000 as spend from {TABLE}",
+    ],
+)
+def test_a_model_cannot_manufacture_grounding_facts_with_literals(
+    guard: SqlGuard, sql: str
+) -> None:
+    """A query result is evidence only when the warehouse actually supplied its values."""
+    with pytest.raises(GuardrailViolation) as err:
+        guard.check(sql)
+    assert err.value.code in {
+        ViolationCode.TABLE_REQUIRED,
+        ViolationCode.LITERAL_PROJECTION,
+    }
+
+
+def test_numeric_filters_and_governed_nullif_zero_still_pass(guard: SqlGuard) -> None:
+    sql = (
+        f"select sum(revenue_usd) / nullif(sum(spend_usd), 0) as roas from {TABLE} "
+        "where spend_usd > 2.5"
+    )
+    assert guard.check(sql).sql
+
+
 def test_the_function_denylist_is_the_rule_that_blocks_read_csv(guard: SqlGuard) -> None:
     """docs/AUDIT.md, R2-7.
 

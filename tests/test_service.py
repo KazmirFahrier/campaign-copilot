@@ -20,7 +20,7 @@ from fastapi.testclient import TestClient
 from campaign_copilot.llm.client import ScriptedClient
 from campaign_copilot.llm.tokens import ContextBudget
 from campaign_copilot.memory import ConversationMemory
-from campaign_copilot.service.app import Settings, create_app
+from campaign_copilot.service.app import Settings, build_tools, create_app
 from campaign_copilot.service.executor import (
     SecretsVisibleError,
     assert_no_secrets,
@@ -113,6 +113,13 @@ def test_a_supplied_request_id_is_preserved() -> None:
     assert response.headers["X-Request-ID"] == "abc123"
 
 
+def test_an_invalid_request_id_is_replaced_before_it_reaches_logs() -> None:
+    invalid = "a" * 100
+    response = _app([]).get("/healthz", headers={"X-Request-ID": invalid})
+    assert response.headers["X-Request-ID"] != invalid
+    assert len(response.headers["X-Request-ID"]) == 16
+
+
 # -------------------------------------------------------------------- streaming
 
 
@@ -180,10 +187,104 @@ def test_the_stream_always_terminates_even_when_the_agent_explodes() -> None:
     )
     events = _events(TestClient(app).post("/v1/chat", json={"question": "x"}))
     assert events[-1]["type"] == "error"
+    assert "kaboom" not in events[-1]["text"]
 
 
 def test_an_empty_question_is_rejected_before_the_model_is_called() -> None:
     assert _app([]).post("/v1/chat", json={"question": ""}).status_code == 422
+
+
+def test_configured_bearer_auth_fails_closed() -> None:
+    app = create_app(
+        settings=Settings(warehouse_path=DB, api_bearer_token="secret-token"),
+        client_factory=lambda: ScriptedClient([plan("answer", answer="Done.")]),
+        tools={},
+    )
+    client = TestClient(app)
+    assert client.post("/v1/chat", json={"question": "x"}).status_code == 401
+    response = client.post(
+        "/v1/chat",
+        json={"question": "x"},
+        headers={"Authorization": "Bearer secret-token"},
+    )
+    assert response.status_code == 200
+
+
+def test_production_configuration_fails_closed_without_required_controls() -> None:
+    with pytest.raises(ValueError, match="CC_API_BEARER_TOKEN"):
+        Settings(environment="production")
+
+
+def test_an_unknown_environment_cannot_bypass_production_checks() -> None:
+    with pytest.raises(ValueError, match="CC_ENVIRONMENT"):
+        Settings(environment="prodution")
+
+
+def test_a_complete_production_configuration_is_accepted() -> None:
+    config = Settings(
+        environment="production",
+        api_bearer_token="x" * 32,
+        executor_url="https://executor.example",
+        executor_audience="https://executor.example",
+        release="abc123",
+    )
+    assert config.environment == "production"
+
+
+def test_release_identity_is_carried_by_every_event() -> None:
+    app = create_app(
+        settings=Settings(warehouse_path=DB, release="abc123"),
+        client_factory=lambda: ScriptedClient([plan("answer", answer="Done.")]),
+        tools={},
+    )
+    events = _events(TestClient(app).post("/v1/chat", json={"question": "x"}))
+    assert events
+    assert all(event["release"] == "abc123" for event in events)
+
+
+def test_invalid_session_identifiers_are_rejected() -> None:
+    assert (
+        _app([])
+        .post("/v1/chat", json={"question": "x", "session_id": "../another-session"})
+        .status_code
+        == 422
+    )
+
+
+def test_admission_control_rejects_excess_model_work() -> None:
+    """Overload must be bounded before another paid model call starts."""
+    from campaign_copilot.llm.client import LLMResponse
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    class BlockingClient:
+        model = "blocking"
+
+        def complete(self, *args: Any, **kwargs: Any) -> LLMResponse:
+            entered.set()
+            assert release.wait(timeout=2)
+            return LLMResponse(text=plan("answer", answer="Done."), model=self.model)
+
+        def count_tokens(self, text: str) -> int:
+            return 1
+
+    app = create_app(
+        settings=Settings(warehouse_path=DB, max_concurrent_requests=1),
+        client_factory=BlockingClient,
+        tools={},
+    )
+    client = TestClient(app)
+    first = threading.Thread(target=lambda: client.post("/v1/chat", json={"question": "first"}))
+    first.start()
+    assert entered.wait(timeout=2)
+    overloaded = client.post("/v1/chat", json={"question": "second"})
+    release.set()
+    first.join(timeout=2)
+
+    assert overloaded.status_code == 429
+    assert overloaded.headers["Retry-After"] == "2"
+    assert client.get("/metrics").json()["overloaded"] == 1
 
 
 # ---------------------------------------------------------------------- metrics
@@ -415,6 +516,21 @@ def test_the_remote_sandbox_authenticates_when_a_token_provider_is_configured() 
     assert seen == ["Bearer id-token-abc"]
 
 
+@pytest.mark.skipif(not DB.exists(), reason="run `make warehouse`")
+def test_the_production_tool_registry_wires_executor_identity() -> None:
+    """Readiness and real execution must authenticate through the same audience."""
+    registry = build_tools(
+        Settings(
+            warehouse_path=DB,
+            executor_url="https://executor.example",
+            executor_audience="https://executor.example",
+        )
+    )
+    remote = registry["python_exec"]
+    assert isinstance(remote, RemoteSandbox)
+    assert remote.token_provider is not None
+
+
 def test_an_unauthenticated_executor_gets_no_header() -> None:
     seen: list[str | None] = []
 
@@ -542,22 +658,19 @@ def test_readiness_reports_the_executor_when_one_is_configured() -> None:
     assert client.get("/healthz").status_code == 200
 
 
-def test_the_grounding_event_carries_context_only_claims() -> None:
-    """docs/AUDIT.md, R6-2. context_only was computed and never surfaced anywhere.
-
-    A number repeated from the question after a query ran is licensed but flagged. Surfacing
-    it is what makes the residual grounding hole 'measured' rather than merely computed.
-    """
+def test_question_numbers_are_blocked_even_after_a_query() -> None:
+    """An unrelated query cannot launder a user supplied number into a finding."""
     client = _app(
         [
             tool_step("t"),
             plan("answer", answer="No campaign beat 2.5x ROAS."),
+            plan("answer", answer="No campaign beat the requested threshold."),
         ]
     )
-    # The stub returns rows, so queries_run is true and 2.5 (from the question) is context_only.
     events = _events(
         client.post("/v1/chat", json={"question": "did any campaign beat 2.5x ROAS?"})
     )
     grounding = [e for e in events if e["type"] == "grounding"]
     assert grounding
-    assert "context_only" in grounding[0]
+    assert grounding[0]["ok"] is False
+    assert grounding[0]["ungrounded"] == ["2.5"]

@@ -84,9 +84,22 @@ resource "google_secret_manager_secret" "anthropic_api_key" {
   }
 }
 
+resource "google_secret_manager_secret" "api_bearer_token" {
+  secret_id = "api-bearer-token"
+  replication {
+    auto {}
+  }
+}
+
 # The api may read the key. The executor is not named here, and must never be.
 resource "google_secret_manager_secret_iam_member" "api_reads_key" {
   secret_id = google_secret_manager_secret.anthropic_api_key.id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.api.email}"
+}
+
+resource "google_secret_manager_secret_iam_member" "api_reads_bearer_token" {
+  secret_id = google_secret_manager_secret.api_bearer_token.id
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.api.email}"
 }
@@ -119,6 +132,11 @@ resource "google_cloud_run_v2_service" "executor" {
   template {
     service_account                  = google_service_account.executor.email
     max_instance_request_concurrency = 4
+
+    scaling {
+      min_instance_count = 1
+      max_instance_count = 1
+    }
 
     vpc_access {
       egress = "ALL_TRAFFIC"
@@ -156,7 +174,15 @@ resource "google_cloud_run_v2_service" "api" {
   ingress  = "INGRESS_TRAFFIC_ALL"
 
   template {
-    service_account = google_service_account.api.email
+    service_account                  = google_service_account.api.email
+    max_instance_request_concurrency = 16
+
+    # Conversation memory is intentionally in-process. One instance makes that contract
+    # correct and explicit. Horizontal scale requires a shared session backend first.
+    scaling {
+      min_instance_count = 1
+      max_instance_count = 1
+    }
 
     containers {
       image = local.api_image
@@ -164,6 +190,31 @@ resource "google_cloud_run_v2_service" "api" {
       env {
         name  = "CC_EXECUTOR_URL"
         value = google_cloud_run_v2_service.executor.uri
+      }
+
+      env {
+        name  = "CC_EXECUTOR_AUDIENCE"
+        value = google_cloud_run_v2_service.executor.uri
+      }
+
+      env {
+        name  = "CC_ENVIRONMENT"
+        value = "production"
+      }
+
+      env {
+        name  = "CC_RELEASE"
+        value = var.image_tag
+      }
+
+      env {
+        name = "CC_API_BEARER_TOKEN"
+        value_source {
+          secret_key_ref {
+            secret  = google_secret_manager_secret.api_bearer_token.secret_id
+            version = "latest"
+          }
+        }
       }
 
       env {
@@ -202,7 +253,10 @@ resource "google_cloud_run_v2_service" "api" {
     }
   }
 
-  depends_on = [google_secret_manager_secret_iam_member.api_reads_key]
+  depends_on = [
+    google_secret_manager_secret_iam_member.api_reads_key,
+    google_secret_manager_secret_iam_member.api_reads_bearer_token,
+  ]
 }
 
 # The api is the only identity permitted to call the executor.

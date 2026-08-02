@@ -23,9 +23,14 @@ from typing import Any
 import duckdb
 
 from campaign_copilot.agent.loop import Agent, AgentResult
-from campaign_copilot.evals.dataset import AdversarialCase, GoldenCase
+from campaign_copilot.evals.dataset import AdversarialCase, GoldenCase, MultiTurnCase
 from campaign_copilot.evals.metrics import multiset_f1, result_set_match
-from campaign_copilot.evals.policies import CompliantPolicy, NaivePolicy, OraclePolicy
+from campaign_copilot.evals.policies import (
+    CompliantPolicy,
+    MultiTurnPolicy,
+    NaivePolicy,
+    OraclePolicy,
+)
 from campaign_copilot.grounding import GroundingChecker, GroundingReport, extract_numbers
 from campaign_copilot.guardrails.sql_guard import SqlGuard, SqlGuardConfig
 from campaign_copilot.llm.client import LLMClient
@@ -36,10 +41,18 @@ from campaign_copilot.resources import REPO_ROOT
 from campaign_copilot.semantic.layer import SemanticLayer
 from campaign_copilot.tools.base import ToolResult
 from campaign_copilot.tools.python_exec import PythonSandbox, SandboxConfig
+from campaign_copilot.tools.remember import RememberTool
 from campaign_copilot.tools.retrieve import SearchDocsTool
 from campaign_copilot.tools.sql import ListMetricsTool, QueryMetricsTool, RunSqlTool, Warehouse
 
-__all__ = ["Ablation", "AdversarialRecord", "EvalRunner", "GoldenRecord", "Report"]
+__all__ = [
+    "Ablation",
+    "AdversarialRecord",
+    "EvalRunner",
+    "GoldenRecord",
+    "MultiTurnRecord",
+    "Report",
+]
 
 WAREHOUSE = Path(os.getenv("CC_WAREHOUSE", REPO_ROOT / "warehouse" / "campaign_copilot.duckdb"))
 
@@ -143,6 +156,39 @@ class AdversarialRecord:
     error_codes: tuple[str | None, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class MultiTurnRecord:
+    """One conversation, scored end to end.
+
+    Every field is a mechanism the multi-turn machinery claims to provide. `pinned_ok`
+    is "the remember tool wrote what the case established"; `pinned_rendered` is "those
+    facts actually reach the system prompt the agent renders" -- the exact reachability
+    that was broken in P1-6b, where pin() existed and nothing called it; and
+    `survives_compression` is the pinned block intact after the rolling summary folds
+    the establishing turn away, which is the entire reason pinning exists.
+    """
+
+    case_id: str
+    turns_ok: bool
+    pinned_ok: bool
+    pinned_rendered: bool
+    survives_compression: bool
+    execution_match: bool
+    final_grounded: bool
+
+    @property
+    def passed(self) -> bool:
+        """Every mechanism held for this conversation."""
+        return (
+            self.turns_ok
+            and self.pinned_ok
+            and self.pinned_rendered
+            and self.survives_compression
+            and self.execution_match
+            and self.final_grounded
+        )
+
+
 @dataclass
 class Report:
     """Aggregates. Every rate is over the cases it actually applies to."""
@@ -151,6 +197,7 @@ class Report:
     policy: str
     golden: list[GoldenRecord] = field(default_factory=list)
     adversarial: list[AdversarialRecord] = field(default_factory=list)
+    multi_turn: list[MultiTurnRecord] = field(default_factory=list)
 
     def _answerable(self) -> list[GoldenRecord]:
         return [r for r in self.golden if not r.expected_clarification]
@@ -229,6 +276,20 @@ class Report:
         )
 
     @property
+    def multi_turn_pass_rate(self) -> float:
+        """Fraction of conversations where every multi-turn mechanism held."""
+        rows = self.multi_turn
+        return sum(r.passed for r in rows) / len(rows) if rows else 0.0
+
+    @property
+    def pinned_fact_failures(self) -> int:
+        """Conversations where a pinned fact was lost, unwritten, or unrendered."""
+        return sum(
+            not (r.pinned_ok and r.pinned_rendered and r.survives_compression)
+            for r in self.multi_turn
+        )
+
+    @property
     def total_tokens(self) -> int:
         """Summed usage across golden cases."""
         return sum(r.tokens for r in self.golden)
@@ -248,6 +309,9 @@ class Report:
             "policy": self.policy,
             "n_golden": len(self.golden),
             "n_adversarial": len(self.adversarial),
+            "n_multi_turn": len(self.multi_turn),
+            "multi_turn_pass_rate": round(self.multi_turn_pass_rate, 4),
+            "pinned_fact_failures": self.pinned_fact_failures,
             "execution_accuracy": round(self.execution_accuracy, 4),
             "tool_call_f1": round(self.tool_call_f1, 4),
             "schema_validity_rate": round(self.schema_validity_rate, 4),
@@ -358,6 +422,79 @@ class EvalRunner:
             latency_ms=latency,
         )
 
+    # -------------------------------------------------------------- multi-turn
+
+    def run_multi_turn(self, case: MultiTurnCase) -> MultiTurnRecord:
+        """Run one conversation end to end and score every multi-turn mechanism.
+
+        One memory across every turn, exactly as the service holds one per session; a
+        fresh :class:`Agent` per turn, exactly as the service builds one per request.
+        The `remember` tool is bound to that memory the way `create_app` binds it.
+        """
+        tools, _ = self._tools()
+        memory = ConversationMemory(
+            session_id=f"eval-{case.id}",
+            budget=ContextBudget(context_window=16_000, max_output_tokens=800),
+        )
+        tools["remember"] = _Recorder(RememberTool(memory=memory))
+        checker = GroundingChecker() if self.ablation.grounding else _NullChecker()
+        recorder: _Recorder = tools["run_sql"]
+
+        results: list[AgentResult] = []
+        for index, turn in enumerate(case.turns):
+            agent = Agent(
+                MultiTurnPolicy(case=case, turn=index),
+                tools,
+                memory,
+                checker=checker,
+                max_steps=6,
+            )
+            results.append(agent.run(turn))
+
+        turns_ok = all(r.ok and not r.needs_clarification for r in results)
+        pinned_ok = all(memory.pinned.get(k) == v for k, v in case.expects_pinned.items())
+
+        # Reachability, measured where it matters: the system prompt the agent renders.
+        system, _ = memory.render("SYSTEM")
+        pinned_rendered = all(
+            k in system and v in system for k, v in case.expects_pinned.items()
+        )
+
+        # Fold everything into the summary, then look again. Pinned facts must be the
+        # one thing compression cannot lose; the establishing turn is now gone, so only
+        # the pin is carrying the constraint.
+        memory.verbatim_turns = 1
+        memory.compress(lambda _msgs: "earlier turns, compressed")
+        system_after, _ = memory.render("SYSTEM")
+        survives = all(
+            k in system_after and v in system_after for k, v in case.expects_pinned.items()
+        )
+
+        if case.final_gold_sql is None:
+            execution_match = True
+        else:
+            gold = [list(r) for r in self._con.execute(case.final_gold_sql).fetchall()]
+            execution_match = recorder.captured and result_set_match(recorder.rows, gold)
+
+        facts = [v for r in recorder.rows for v in r if isinstance(v, (int, float))]
+        final_grounded = (
+            GroundingChecker()
+            .check(results[-1].answer, facts, queries_run=recorder.captured)
+            .ok
+            if results
+            else False
+        )
+
+        return MultiTurnRecord(
+            case_id=case.id,
+            turns_ok=turns_ok,
+            pinned_ok=pinned_ok,
+            pinned_rendered=pinned_rendered,
+            survives_compression=survives,
+            execution_match=execution_match,
+            final_grounded=final_grounded,
+        )
+
     # ------------------------------------------------------------- adversarial
 
     def run_adversarial(self, case: AdversarialCase) -> AdversarialRecord:
@@ -407,6 +544,7 @@ class EvalRunner:
         self,
         golden: list[GoldenCase],
         adversarial: list[AdversarialCase],
+        multi_turn: list[MultiTurnCase] | None = None,
         *,
         policy: str = "oracle",
     ) -> Report:
@@ -417,4 +555,6 @@ class EvalRunner:
             report.golden.append(self.run_golden(golden_case, make(case=golden_case)))
         for adversarial_case in adversarial:
             report.adversarial.append(self.run_adversarial(adversarial_case))
+        for multi_turn_case in multi_turn or []:
+            report.multi_turn.append(self.run_multi_turn(multi_turn_case))
         return report

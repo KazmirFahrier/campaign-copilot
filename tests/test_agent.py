@@ -17,6 +17,7 @@ from campaign_copilot.grounding import GroundingChecker
 from campaign_copilot.llm import ContextBudget, ScriptedClient
 from campaign_copilot.memory import ConversationMemory
 from campaign_copilot.tools.base import ToolResult, ToolSpec
+from campaign_copilot.tools.remember import RememberTool
 
 
 def plan(action: str, **kw: Any) -> str:
@@ -146,12 +147,20 @@ def test_a_twice_ungrounded_answer_is_refused_rather_than_shipped() -> None:
     assert "$500,000" in result.answer
 
 
-def test_numbers_from_the_question_are_grounded_by_the_question() -> None:
+def test_numbers_from_the_question_are_not_grounded_by_an_unrelated_query() -> None:
     tool = FakeTool("t", [ToolResult.success("none", rows=[])])
     agent, _ = build(
-        [tool_step("t"), plan("answer", answer="No campaign beat 2.5x ROAS.")], {"t": tool}
+        [
+            tool_step("t"),
+            plan("answer", answer="No campaign beat 2.5x ROAS."),
+            plan("answer", answer="No campaign beat the requested threshold."),
+        ],
+        {"t": tool},
     )
-    assert agent.run("which campaigns beat 2.5x ROAS?").ok
+    result = agent.run("which campaigns beat 2.5x ROAS?")
+    assert result.ok
+    assert "2.5" not in result.answer
+    assert any(step.error_code == "UNGROUNDED" for step in result.trace.steps)
 
 
 # ------------------------------------------------------- tool failure handling
@@ -438,3 +447,54 @@ def test_cancellation_is_checked_between_steps_not_mid_tool() -> None:
     assert result.cancelled
     assert len(client.calls) == 0
     assert tool.calls == 0
+
+
+# -------------------------------------------------------------------- remember
+
+
+def test_a_pinned_constraint_reaches_the_next_turns_system_prompt() -> None:
+    """The full P1-6b path: model pins via `remember`, the *rendered* prompt carries it.
+
+    `pin()` existed, was tested, and was called by nothing in `src/` -- so a standing
+    instruction lived or died on the rolling summary keeping it. This test walks the
+    write path the way the service now wires it: the tool and the agent share one memory,
+    and the next turn's system prompt must contain the constraint verbatim.
+    """
+    memory = ConversationMemory(
+        session_id="t", budget=ContextBudget(context_window=8000, max_output_tokens=800)
+    )
+    client = ScriptedClient(
+        [
+            tool_step("remember", key="exclude_branded", value="true"),
+            plan("answer", answer="Understood: branded search is excluded from now on."),
+            plan("answer", answer="OK."),
+        ]
+    )
+    agent = Agent(client, {"remember": RememberTool(memory=memory)}, memory)
+
+    first = agent.run("Exclude branded search from everything.")
+    assert first.ok
+    assert memory.pinned == {"exclude_branded": "true"}
+
+    second = agent.run("What was ROAS?")
+    assert second.ok
+    assert "exclude_branded: true" in (client.systems[-1] or "")
+
+
+def test_a_remembered_value_cannot_ground_a_number() -> None:
+    """Pinning 'last 28 days' must not license stating 28 as a finding."""
+    memory = ConversationMemory(
+        session_id="t", budget=ContextBudget(context_window=8000, max_output_tokens=800)
+    )
+    client = ScriptedClient(
+        [
+            tool_step("remember", key="date_range", value="last 28 days"),
+            plan("answer", answer="I will use a 42.0 day window."),
+            plan("answer", answer="I will use a 42.0 day window."),
+        ]
+    )
+    agent = Agent(client, {"remember": RememberTool(memory=memory)}, memory)
+    result = agent.run("Use a sensible window going forward.")
+    # 42.0 came from nowhere: not the question, not a query, and the pin grounds nothing.
+    assert not result.ok
+    assert result.trace.grounding is not None and not result.trace.grounding.ok

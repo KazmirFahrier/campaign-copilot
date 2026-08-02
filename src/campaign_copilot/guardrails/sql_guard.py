@@ -18,7 +18,10 @@ Rules, in order:
    unstable and it leaks columns the agent was never told about.
 6. Every aggregate must be an atom of a registered metric. ``avg(roas)`` is rejected;
    ``sum(revenue_usd)`` is allowed. This is what stops the agent inventing arithmetic.
-7. A ``LIMIT`` is injected if absent and clamped if excessive.
+7. A query must read an allowlisted table, and a projected numeric literal is rejected.
+   Otherwise the model can turn its own guess into a "tool fact" with
+   ``SELECT 412000 AS spend`` and defeat the grounding gate.
+8. A ``LIMIT`` is injected if absent and clamped if excessive.
 
 The guard returns rewritten SQL. Callers execute *that*, never the original string.
 """
@@ -81,6 +84,8 @@ class ViolationCode(str):
     FUNCTION_NOT_ALLOWED = "FUNCTION_NOT_ALLOWED"
     STAR_NOT_ALLOWED = "STAR_NOT_ALLOWED"
     UNREGISTERED_AGGREGATE = "UNREGISTERED_AGGREGATE"
+    TABLE_REQUIRED = "TABLE_REQUIRED"
+    LITERAL_PROJECTION = "LITERAL_PROJECTION"
 
 
 class GuardrailViolation(Exception):  # noqa: N818
@@ -149,8 +154,10 @@ class SqlGuard:
         # (docs/AUDIT.md, R2-7), because the test accepted either violation code.
         self._check_functions(tree)
         self._check_tables(tree)
+        self._check_table_source(tree)
         if not self.config.allow_star:
             self._check_star(tree)
+        self._check_projected_literals(tree)
         if self.config.require_registered_aggregates and self.config.allowed_aggregates:
             self._check_aggregates(tree)
 
@@ -225,6 +232,56 @@ class SqlGuard:
                     f"Table {qualified!r} is not on the allowlist. Permitted: "
                     f"{sorted(self.config.allowed_tables)}",
                 )
+
+    @staticmethod
+    def _check_table_source(tree: exp.Expression) -> None:
+        """Require a real table somewhere in the query.
+
+        Grounding trusts values returned by this guarded path. A tableless query is not a
+        warehouse observation, so permitting ``SELECT <model supplied number>`` would let the
+        model manufacture the evidence used to approve its own answer.
+        """
+        cte_names = {c.alias_or_name for c in tree.find_all(exp.CTE)}
+        base_tables = [
+            table
+            for table in tree.find_all(exp.Table)
+            if table.db or table.name not in cte_names
+        ]
+        if not base_tables:
+            raise GuardrailViolation(
+                ViolationCode.TABLE_REQUIRED,
+                "A grounded query must read an allowlisted warehouse table. Constant-only "
+                "SELECT statements cannot establish facts.",
+            )
+
+    @staticmethod
+    def _check_projected_literals(tree: exp.Expression) -> None:
+        """Reject model supplied numbers projected as if the warehouse produced them.
+
+        Numeric literals remain valid in filters, limits, grouping ordinals, and the zero
+        denominator of ``NULLIF``. They are forbidden in result expressions because every
+        numeric result becomes grounding evidence. The exception preserves governed ratio
+        expressions such as ``sum(revenue) / nullif(sum(spend), 0)``.
+        """
+        for select in tree.find_all(exp.Select):
+            for projection in select.expressions:
+                for literal in projection.find_all(exp.Literal):
+                    if not literal.is_number:
+                        continue
+                    parent = literal.parent
+                    safe_nullif_zero = (
+                        literal.this == "0"
+                        and isinstance(parent, exp.Nullif)
+                        and parent.args.get("expression") is literal
+                    )
+                    if safe_nullif_zero:
+                        continue
+                    raise GuardrailViolation(
+                        ViolationCode.LITERAL_PROJECTION,
+                        f"Numeric literal {literal.sql()!r} is projected into the result. "
+                        "Only values derived from warehouse columns may become grounding "
+                        "facts.",
+                    )
 
     @staticmethod
     def _check_functions(tree: exp.Expression) -> None:

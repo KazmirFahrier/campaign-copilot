@@ -74,6 +74,8 @@ ignore = ["D203", "D213", "ANN401"]
 convention = "google"
 
 [tool.mypy]
+# Matches CI's interpreter. At "3.11", current numpy stubs (PEP 695 `type` statements)
+# fail to parse and kill the whole run -- a fresh install regressed the type gate.
 python_version = "3.12"
 strict = true
 files = ["src/campaign_copilot"]
@@ -89,6 +91,12 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 module = ["anthropic.*", "openai.*", "tiktoken.*", "googleapiclient.*", "pptx.*", "google.*"]
 ignore_missing_imports = true
+
+# google-auth grew a partial py.typed: `fetch_id_token` itself is still untyped, which
+# under --strict fails the *caller*. Relax exactly that rule, exactly there.
+[[tool.mypy.overrides]]
+module = ["campaign_copilot.tools.remote_exec"]
+disallow_untyped_calls = false
 
 # python-pptx ships a partial py.typed: CategoryChartData.add_series is untyped upstream.
 # The renderer is the only place that touches it.

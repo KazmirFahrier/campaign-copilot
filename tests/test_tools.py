@@ -8,17 +8,21 @@ from typing import Any
 import pytest
 
 from campaign_copilot.guardrails.sql_guard import SqlGuard, SqlGuardConfig
+from campaign_copilot.llm import ContextBudget
+from campaign_copilot.memory import ConversationMemory
 from campaign_copilot.semantic.layer import SemanticLayer
 from campaign_copilot.tools import (
     ListMetricsTool,
     PythonSandbox,
     QueryMetricsTool,
+    RememberTool,
     RunSqlTool,
     SandboxConfig,
     ToolResult,
     Warehouse,
 )
 from campaign_copilot.tools.python_exec import session_scope
+from campaign_copilot.tools.remember import MAX_PINNED_FACTS
 
 DB = Path(__file__).resolve().parents[1] / "warehouse" / "campaign_copilot.duckdb"
 TABLE = "main_marts.campaign_performance_daily"
@@ -185,8 +189,15 @@ def test_reset_clears_a_session(sandbox: PythonSandbox) -> None:
     assert not _in_session("e", sandbox, code="print(v)").ok
 
 
-def test_a_runaway_loop_is_killed(sandbox: PythonSandbox) -> None:
-    result = _in_session("f", sandbox, code="while True:\n    pass")
+def test_a_runaway_loop_is_killed() -> None:
+    """Ensure the wall clock wins over the CPU limit.
+
+    With cpu == timeout, which kill fires first is a race, and
+    on a loaded machine the CPU rlimit's SIGKILL reports MEMORY_OR_CRASH instead. The
+    assertion is about the *timeout* path, so the config must make that path certain.
+    """
+    box = PythonSandbox(config=SandboxConfig(timeout_seconds=2, cpu_seconds=30, memory_mb=256))
+    result = _in_session("f", box, code="while True:\n    pass")
     assert not result.ok
     assert result.error_code == "TIMEOUT"
 
@@ -275,3 +286,65 @@ def test_a_session_namespace_cannot_grow_without_bound(sandbox: PythonSandbox) -
     assert overflow.error_code == "NAMESPACE_TOO_LARGE"
     # The session was reset, so the earlier binding is gone too — loud, not partial.
     assert not _in_session("cap", box, code="print(keep)").ok
+
+
+# -------------------------------------------------------------------- remember
+
+
+class TestRememberTool:
+    """The write path for pinned facts (docs/AUDIT.md, P1-6b)."""
+
+    @staticmethod
+    def _memory() -> ConversationMemory:
+        return ConversationMemory(
+            session_id="t", budget=ContextBudget(context_window=8000, max_output_tokens=800)
+        )
+
+    def test_pinning_writes_through_to_the_memory_the_agent_renders(self) -> None:
+        memory = self._memory()
+        result = RememberTool(memory=memory).run(key="date_range", value="last 28 days")
+        assert result.ok
+        assert memory.pinned == {"date_range": "last 28 days"}
+        assert "last 28 days" in memory.pinned_block()
+
+    def test_a_pinned_fact_licenses_no_numbers(self) -> None:
+        """'last 28 days' must not entitle the agent to state 28 in an answer."""
+        result = RememberTool(memory=self._memory()).run(key="d", value="last 28 days")
+        assert not result.grounds_numbers
+        assert result.numeric_facts() == []
+
+    def test_forget_retracts_a_pin_and_is_silent_when_absent(self) -> None:
+        memory = self._memory()
+        tool = RememberTool(memory=memory)
+        tool.run(key="k", value="v")
+        assert tool.run(key="k", forget=True).ok
+        assert memory.pinned == {}
+        assert tool.run(key="k", forget=True).ok  # retracting twice is not an error
+
+    def test_a_blank_key_is_a_repairable_failure(self) -> None:
+        result = RememberTool(memory=self._memory()).run(key="   ", value="v")
+        assert not result.ok
+        assert result.error_code == "INVALID_KEY"
+
+    def test_a_pin_without_a_value_is_a_repairable_failure(self) -> None:
+        result = RememberTool(memory=self._memory()).run(key="k")
+        assert not result.ok
+        assert result.error_code == "MISSING_VALUE"
+
+    def test_an_essay_is_refused(self) -> None:
+        result = RememberTool(memory=self._memory()).run(key="k", value="x" * 500)
+        assert not result.ok
+        assert result.error_code == "VALUE_TOO_LONG"
+
+    def test_the_pin_store_is_capped_but_updates_stay_allowed(self) -> None:
+        """The pinned block enters every prompt; unbounded, it is a stuffing channel."""
+        memory = self._memory()
+        tool = RememberTool(memory=memory)
+        for i in range(MAX_PINNED_FACTS):
+            assert tool.run(key=f"k{i}", value="v").ok
+        overflow = tool.run(key="one_more", value="v")
+        assert not overflow.ok
+        assert overflow.error_code == "PIN_LIMIT"
+        # Updating an existing key is not a new pin and must still work at the cap.
+        assert tool.run(key="k0", value="updated").ok
+        assert memory.pinned["k0"] == "updated"

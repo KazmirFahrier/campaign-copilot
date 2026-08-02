@@ -19,7 +19,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from campaign_copilot.resources import resource_dir
 
@@ -63,13 +63,32 @@ class GoldenCase(BaseModel):
 
 
 class MultiTurnCase(BaseModel):
-    """A conversation. Each turn is a question; the last one carries the assertion."""
+    """A conversation. Each turn is a question; the last one carries the assertion.
+
+    ``pin_on_turn`` and ``turn_sql`` are the scripted policy's plan, exactly as
+    :class:`GoldenCase` embeds the oracle's plan: the deterministic driver needs to know
+    *what the right behaviour looks like* so the harness can measure whether the system
+    lets right behaviour succeed. A ``turn_sql`` entry of ``None`` is a conversational
+    turn (an acknowledgement, no query).
+    """
 
     id: str
     turns: list[str]
     tests: str
     expects_pinned: dict[str, str] = Field(default_factory=dict)
     final_gold_sql: str | None = None
+    pin_on_turn: int | None = None
+    turn_sql: list[str | None] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _script_is_coherent(self) -> MultiTurnCase:
+        if self.turn_sql and len(self.turn_sql) != len(self.turns):
+            raise ValueError(f"{self.id}: turn_sql must have one entry per turn")
+        if self.pin_on_turn is not None and not self.expects_pinned:
+            raise ValueError(f"{self.id}: pin_on_turn without expects_pinned")
+        if self.pin_on_turn is not None and not 0 <= self.pin_on_turn < len(self.turns):
+            raise ValueError(f"{self.id}: pin_on_turn out of range")
+        return self
 
 
 class AdversarialCase(BaseModel):

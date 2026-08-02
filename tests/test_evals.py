@@ -186,8 +186,10 @@ def _row(ablation: str, policy: str, **overrides: object) -> dict[str, object]:
         "grounding_rate": 1.0,
         "injection_block_rate": 1.0,
         "clarification_recall": 1.0,
+        "multi_turn_pass_rate": 1.0,
         "ungrounded_answers_shipped": 0,
         "wrong_but_grounded": 0,
+        "pinned_fact_failures": 0,
     }
     base.update(overrides)
     return base
@@ -305,3 +307,54 @@ def test_the_sandbox_cannot_read_the_parent_api_key(monkeypatch: pytest.MonkeyPa
     assert result.ok, "the call succeeds; that is the point"
     assert "CANARY" not in result.content
     assert "ANTHROPIC_API_KEY" not in result.content
+
+
+# ------------------------------------------------------------------ multi-turn
+
+
+def test_every_multi_turn_final_gold_sql_is_executable() -> None:
+    """Same rule as the golden set: a wrong gold is a silently wrong case."""
+    import duckdb
+
+    con = duckdb.connect(str(WAREHOUSE), read_only=True)
+    for case in load_multi_turn():
+        assert case.final_gold_sql is not None, f"{case.id} has no final gold"
+        assert con.execute(case.final_gold_sql).fetchall(), f"{case.id} gold returned no rows"
+        for sql in case.turn_sql:
+            if sql is not None:
+                con.execute(sql)
+
+
+def test_the_multi_turn_suite_passes_end_to_end() -> None:
+    """docs/AUDIT.md, P2-10: the six conversations, scored, not just parsed.
+
+    Like the oracle's 1.000, this is a property of the harness *and* the system: a
+    scripted competent driver through the real loop, the real tools, the real memory.
+    A regression in the remember tool, the pinned block, compression, or grounding
+    fails here first -- this is the test that would have caught P0-3, P1-4 and P1-6
+    in one afternoon, per the audit.
+    """
+    runner = EvalRunner(db_path=WAREHOUSE)
+    records = [runner.run_multi_turn(case) for case in load_multi_turn()]
+    failed = [r for r in records if not r.passed]
+    assert not failed, f"multi-turn failures: {failed}"
+
+
+def test_pinned_facts_survive_compression_in_the_scored_path() -> None:
+    """mt06 is the case pinning exists for: the standing instruction outlives the summary."""
+    runner = EvalRunner(db_path=WAREHOUSE)
+    case = next(c for c in load_multi_turn() if c.id == "mt06")
+    record = runner.run_multi_turn(case)
+    assert record.pinned_ok
+    assert record.pinned_rendered
+    assert record.survives_compression
+
+
+def test_multi_turn_metrics_appear_in_the_report_shape() -> None:
+    """The gate can only hold a metric that is in the row. See check_regression."""
+    runner = EvalRunner(db_path=WAREHOUSE)
+    report = runner.run_suite(load_golden()[:1], [], load_multi_turn()[:1])
+    row = report.as_dict()
+    assert row["n_multi_turn"] == 1
+    assert 0.0 <= row["multi_turn_pass_rate"] <= 1.0
+    assert "pinned_fact_failures" in row

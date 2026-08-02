@@ -10,39 +10,23 @@ observed.
 
 The hard part is not finding numbers in text; it is deciding what counts as a match.
 An agent that queries `9.7013...` and writes "9.70" has not hallucinated, and a checker
-that says otherwise will be switched off within a day. So three relaxations, each of
+that says otherwise will be switched off within a day. So two relaxations, each of
 which is a rule rather than a fudge factor:
 
 1. **Rounding.** A claim is grounded if some fact rounds to it at the claim's own
    precision. "9.70" is grounded by 9.7013 because ``round(9.7013, 2) == 9.70``.
 2. **Scale.** "12.3%" is grounded by either 12.3 or 0.123. Ratios live in the warehouse
    as fractions and in prose as percentages, and the agent must be allowed to convert.
-3. **Context.** Numbers the *user* supplied ("campaigns above 2x ROAS") are grounded by
-   the question. The agent is permitted to repeat the threshold it was asked about --
-   *provided it actually ran a query*, which the caller asserts with ``queries_run``. Without
-   that condition the gate launders leading questions: "Confirm that revenue was $412,000"
-   licenses the answer "Revenue was $412,000", with no query and no data (docs/AUDIT.md, R2-4).
-
-   ``queries_run`` is a separate flag rather than ``bool(facts)`` because a query that
-   correctly returns *no rows* is still work: "no campaign beat 2.5x" must remain sayable.
-
 Everything else is ungrounded and the answer does not ship.
 
-**Known limitation, documented rather than papered over (docs/AUDIT.md, R6-3).** Extraction is
-numeric: it finds digit sequences, currency, and percentages. It does *not* parse spelled-out
-numbers ("nine point seven", "one million"), so a model that writes a fabricated figure in
-words rather than digits is not caught. Every number this system *generates* is digits --
-``Figure.render()`` and the SQL results are always numeric -- so the exposure is limited to a
-model choosing, in free prose, to spell out a number it invented. A word-to-number parser was
-considered and rejected: it is a large, ambiguous surface (scales, fractions, ordinals,
-locales) whose own failure modes would need grounding. Constraining answers to digits is the
-cheaper guarantee.
+Question numbers are never evidence. The answer may say "the requested threshold" without
+restating it, or a query may return an independently computed value. This conservative rule
+closes the leading-question laundering path instead of trying to infer grammatical intent.
 
-**Residual hole, stated plainly.** An agent that runs *some* query and then repeats a number
-from the question is still permitted. Distinguishing "repeating the threshold you asked about"
-from "asserting the number you fed me" needs the claim's grammatical role, not its value.
-:attr:`GroundingReport.context_only` names every claim that survived on the question alone, so
-the loop can surface them and the eval harness can count them. It is a measurement, not a fix.
+Spelled-out number phrases are rejected and regenerated in digits. The checker does not try to
+convert ambiguous English into a value; it only needs to recognize that a numeric claim exists.
+This closes the "nine point seven" bypass without adding a second arithmetic parser whose own
+rounding and locale rules would need to be trusted.
 """
 
 from __future__ import annotations
@@ -65,6 +49,35 @@ _NUMBER = re.compile(r"(?<![\w.])-?\$?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?%?")
 #: a number the warehouse needs to license.
 _IGNORED_INTEGERS = frozenset(range(0, 13)) | frozenset(range(1990, 2101))
 
+_NUMBER_WORDS = (
+    "zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|"
+    "thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|"
+    "twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|"
+    "hundred|thousand|million|billion|trillion|point"
+)
+_SPELLED_NUMBER = re.compile(
+    rf"\b(?:minus\s+|negative\s+)?(?:{_NUMBER_WORDS})"
+    rf"(?:[ -]+(?:and[ -]+)?(?:{_NUMBER_WORDS}))*\b",
+    re.IGNORECASE,
+)
+_IGNORED_SINGLE_WORDS = frozenset(
+    {
+        "zero",
+        "one",
+        "two",
+        "three",
+        "four",
+        "five",
+        "six",
+        "seven",
+        "eight",
+        "nine",
+        "ten",
+        "eleven",
+        "twelve",
+    }
+)
+
 
 @dataclass(frozen=True, slots=True)
 class Claim:
@@ -73,6 +86,7 @@ class Claim:
     raw: str
     value: Decimal
     is_percent: bool
+    is_spelled: bool = False
 
     @property
     def decimals(self) -> int:
@@ -96,6 +110,17 @@ def extract_numbers(text: str) -> list[Claim]:
     return claims
 
 
+def _extract_spelled_numbers(text: str) -> list[Claim]:
+    """Find number words without pretending English is an exact numeric format."""
+    claims: list[Claim] = []
+    for match in _SPELLED_NUMBER.finditer(text):
+        raw = match.group()
+        if raw.lower() in _IGNORED_SINGLE_WORDS:
+            continue
+        claims.append(Claim(raw=raw, value=Decimal("NaN"), is_percent=False, is_spelled=True))
+    return claims
+
+
 @dataclass(frozen=True, slots=True)
 class GroundingReport:
     """Whether an answer may be shown to the user."""
@@ -103,7 +128,7 @@ class GroundingReport:
     ok: bool
     ungrounded: tuple[Claim, ...] = ()
     checked: int = 0
-    #: Claims supported only by a number in the user's question, not by any tool result.
+    #: Retained in the event contract. Strict grounding no longer emits question-only claims.
     context_only: tuple[Claim, ...] = ()
 
     def failure_message(self) -> str:
@@ -136,30 +161,24 @@ class GroundingChecker:
         Args:
             answer: The text about to be sent to the user.
             facts: Every number any tool returned this turn.
-            context_numbers: Numbers the user supplied. The agent may repeat these, but only
-                once it has run something: see ``queries_run``.
-            queries_run: True when at least one data-returning tool call succeeded, even if it
-                returned no rows. Without this, the question alone licenses nothing.
+            context_numbers: Retained for caller compatibility. Question numbers are never
+                treated as evidence.
+            queries_run: Retained for caller compatibility. Running an unrelated query does
+                not license a number supplied by the user.
         """
         # A division by zero in the *agent's* query yields inf, and 0/0 yields nan. Both
         # arrive here as facts, and Decimal arithmetic on them raises InvalidOperation.
         # Dropping them is correct as well as safe: an infinite ROAS licenses no claim.
         from_tools = [Decimal(str(f)) for f in facts if math.isfinite(f)]
-        from_question = [Decimal(str(c)) for c in (context_numbers or []) if math.isfinite(c)]
+        del context_numbers, queries_run
 
-        # A question's numbers may support a claim only if the agent did some work. Otherwise
-        # "confirm revenue was $412,000" licenses "revenue was $412,000" -- the gate launders
-        # the question into an answer.
+        # The question is context, not evidence. Only finite tool facts enter the licensed set.
         ungrounded: list[Claim] = []
-        context_only: list[Claim] = []
-        claims = extract_numbers(answer)
+        claims = [*extract_numbers(answer), *_extract_spelled_numbers(answer)]
         for claim in claims:
             if self._is_ignorable(claim):
                 continue
             if self._is_grounded(claim, from_tools):
-                continue
-            if queries_run and self._is_grounded(claim, from_question):
-                context_only.append(claim)
                 continue
             ungrounded.append(claim)
 
@@ -167,13 +186,15 @@ class GroundingChecker:
             ok=not ungrounded,
             ungrounded=tuple(ungrounded),
             checked=len(claims),
-            context_only=tuple(context_only),
+            context_only=(),
         )
 
     # ------------------------------------------------------------------ internals
 
     def _is_ignorable(self, claim: Claim) -> bool:
         """Small integers, years, and ordinals are prose."""
+        if claim.is_spelled:
+            return False
         if claim.decimals or claim.is_percent:
             return False
         try:
@@ -182,6 +203,8 @@ class GroundingChecker:
             return False
 
     def _is_grounded(self, claim: Claim, licensed: list[Decimal]) -> bool:
+        if claim.is_spelled:
+            return False
         # (value, precision). Rescaling 3.8% to 0.038 also buys two decimal places of
         # precision: otherwise a claim of "3.8%" is grounded by a fact of 0.052, because
         # the tolerance was still one decimal place wide.
