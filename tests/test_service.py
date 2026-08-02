@@ -36,6 +36,7 @@ from campaign_copilot.tools.python_exec import PythonSandbox, SandboxConfig
 from campaign_copilot.tools.remote_exec import RemoteSandbox
 
 DB = Path(__file__).resolve().parents[1] / "warehouse" / "campaign_copilot.duckdb"
+TEST_SIGNING_PRIVATE_KEY = base64.b64encode(bytes(range(32))).decode()
 
 
 def plan(action: str, **kw: Any) -> str:
@@ -229,6 +230,7 @@ def test_a_complete_production_configuration_is_accepted() -> None:
         api_bearer_token="x" * 32,
         executor_url="https://executor.example",
         executor_audience="https://executor.example",
+        executor_signing_private_key=TEST_SIGNING_PRIVATE_KEY,
         release="abc123",
     )
     assert config.environment == "production"
@@ -241,6 +243,7 @@ def test_production_disables_interactive_api_schema_routes() -> None:
         api_bearer_token="x" * 32,
         executor_url="https://executor.example",
         executor_audience="https://executor.example",
+        executor_signing_private_key=TEST_SIGNING_PRIVATE_KEY,
         release="abc123",
     )
     client = TestClient(
