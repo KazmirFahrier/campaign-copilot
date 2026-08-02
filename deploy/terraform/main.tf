@@ -231,7 +231,7 @@ resource "google_cloud_run_v2_service" "api" {
     max_instance_request_concurrency = 16
     labels = {
       release        = var.image_tag
-      network_config = "iam-private-v1"
+      network_config = "iam-private-v2"
     }
 
     # Conversation memory is intentionally in-process. One instance makes that contract
