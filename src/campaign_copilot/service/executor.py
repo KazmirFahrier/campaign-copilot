@@ -30,9 +30,11 @@ import os
 import re
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from campaign_copilot.service.request_auth import RequestVerifier
 from campaign_copilot.tools.python_exec import PythonSandbox, SandboxConfig
 
 __all__ = [
@@ -114,6 +116,26 @@ def create_app(
     assert_no_secrets(environ)
     engine = sandbox or PythonSandbox(config=SandboxConfig())
     app = FastAPI(title="campaign-copilot executor", docs_url=None, redoc_url=None)
+    environment = os.environ if environ is None else environ
+    public_key = environment.get("CC_EXECUTOR_SIGNING_PUBLIC_KEY")
+    verifier = RequestVerifier.from_base64(public_key) if public_key else None
+
+    @app.middleware("http")
+    async def authenticate_execution(request: Request, call_next: Any) -> Any:
+        if request.url.path not in {"/exec", "/reset"} or verifier is None:
+            return await call_next(request)
+        body = await request.body()
+        valid = verifier.verify(
+            timestamp=request.headers.get("X-CC-Timestamp", ""),
+            nonce=request.headers.get("X-CC-Nonce", ""),
+            signature=request.headers.get("X-CC-Signature", ""),
+            method=request.method,
+            path=request.url.path,
+            body=body,
+        )
+        if not valid:
+            return JSONResponse({"detail": "Authentication required"}, status_code=401)
+        return await call_next(request)
 
     @app.get("/healthz")
     def healthz() -> dict[str, str]:

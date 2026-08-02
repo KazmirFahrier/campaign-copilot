@@ -13,6 +13,7 @@ authors = [{ name = "Kazmir Fahrier" }]
 keywords = ["llm", "agents", "rag", "evaluation", "dbt", "duckdb", "semantic-layer"]
 
 dependencies = [
+    "cryptography>=44",
     "duckdb>=1.0",
     "sqlglot>=25.0",
     "pydantic>=2.7",

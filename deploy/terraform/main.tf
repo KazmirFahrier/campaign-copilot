@@ -66,6 +66,9 @@ locals {
   api_image      = "${local.repo}/api:${var.image_tag}"
   executor_image = "${local.repo}/executor:${var.image_tag}"
   executor_url   = "https://cc-executor-${data.google_project.current.number}.${var.region}.run.app"
+  # Public verification key for replay protected API to executor requests. Its matching
+  # private key exists only in Secret Manager and is mounted only into the api container.
+  executor_signing_public_key = "rdANtBgo+YRLsvOs/H73PFoa6DRTFNY+DS++qR2333w="
 }
 
 resource "google_project_service" "required" {
@@ -126,8 +129,25 @@ resource "google_secret_manager_secret" "api_bearer_token" {
   depends_on = [google_project_service.required]
 }
 
+resource "google_secret_manager_secret" "executor_signing_private_key" {
+  secret_id = "executor-signing-private-key"
+  replication {
+    auto {}
+  }
+  lifecycle {
+    prevent_destroy = true
+  }
+  depends_on = [google_project_service.required]
+}
+
 resource "google_secret_manager_secret_iam_member" "api_reads_bearer_token" {
   secret_id = google_secret_manager_secret.api_bearer_token.id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.api.email}"
+}
+
+resource "google_secret_manager_secret_iam_member" "api_reads_executor_signing_key" {
+  secret_id = google_secret_manager_secret.executor_signing_private_key.id
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.api.email}"
 }
@@ -182,6 +202,9 @@ resource "google_compute_router_nat" "api" {
 resource "google_cloud_run_v2_service" "executor" {
   name     = "cc-executor"
   location = var.region
+  # An organization policy blocks the managed invoker check at the service edge. Execution
+  # routes are instead protected by replay protected Ed25519 signatures verified in the app.
+  invoker_iam_disabled = true
 
   # The endpoint is routable, but Cloud Run IAM grants invocation only to the api service
   # account. The executor still has no credentials and no network egress.
@@ -207,7 +230,14 @@ resource "google_cloud_run_v2_service" "executor" {
     containers {
       image = local.executor_image
 
-      # No env block. No secrets. assert_no_secrets() enforces it at startup.
+      # This is a public verification key, not a credential. The matching private key is
+      # mounted only into the api container.
+      env {
+        name  = "CC_EXECUTOR_SIGNING_PUBLIC_KEY"
+        value = local.executor_signing_public_key
+      }
+
+      # No secrets. assert_no_secrets() enforces it at startup.
       resources {
         limits = {
           cpu    = "1"
@@ -307,6 +337,16 @@ resource "google_cloud_run_v2_service" "api" {
         }
       }
 
+      env {
+        name = "CC_EXECUTOR_SIGNING_PRIVATE_KEY"
+        value_source {
+          secret_key_ref {
+            secret  = google_secret_manager_secret.executor_signing_private_key.secret_id
+            version = "latest"
+          }
+        }
+      }
+
       resources {
         limits = {
           cpu    = "2"
@@ -337,16 +377,8 @@ resource "google_cloud_run_v2_service" "api" {
     google_compute_router_nat.api,
     google_project_iam_member.api_uses_vertex,
     google_secret_manager_secret_iam_member.api_reads_bearer_token,
-    google_cloud_run_v2_service_iam_member.api_invokes_executor,
+    google_secret_manager_secret_iam_member.api_reads_executor_signing_key,
   ]
-}
-
-# The api is the only identity permitted to call the executor.
-resource "google_cloud_run_v2_service_iam_member" "api_invokes_executor" {
-  name     = google_cloud_run_v2_service.executor.name
-  location = var.region
-  role     = "roles/run.invoker"
-  member   = "serviceAccount:${google_service_account.api.email}"
 }
 
 # Cloud Run accepts public traffic at the edge, then the application bearer token protects every

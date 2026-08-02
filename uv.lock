@@ -151,6 +151,7 @@ name = "campaign-copilot"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "cryptography" },
     { name = "duckdb" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
@@ -200,6 +201,7 @@ build = [
 [package.metadata]
 requires-dist = [
     { name = "anthropic", marker = "extra == 'service'", specifier = ">=0.49,<1" },
+    { name = "cryptography", specifier = ">=44" },
     { name = "dbt-core", marker = "extra == 'warehouse'", specifier = ">=1.8" },
     { name = "dbt-duckdb", marker = "extra == 'warehouse'", specifier = ">=1.8" },
     { name = "duckdb", specifier = ">=1.0" },

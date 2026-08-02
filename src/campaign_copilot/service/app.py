@@ -129,6 +129,10 @@ class Settings:
         default_factory=lambda: os.getenv("CC_API_BEARER_TOKEN") or None,
         repr=False,
     )
+    executor_signing_private_key: str | None = field(
+        default_factory=lambda: os.getenv("CC_EXECUTOR_SIGNING_PRIVATE_KEY") or None,
+        repr=False,
+    )
     max_concurrent_requests: int = field(
         default_factory=lambda: int(os.getenv("CC_MAX_CONCURRENT_REQUESTS", "16"))
     )
@@ -157,6 +161,8 @@ class Settings:
             missing.append("CC_EXECUTOR_URL (HTTPS required)")
         if not self.executor_audience:
             missing.append("CC_EXECUTOR_AUDIENCE")
+        if not self.executor_signing_private_key:
+            missing.append("CC_EXECUTOR_SIGNING_PRIVATE_KEY")
         if self.llm_provider == "gemini" and not self.google_cloud_project:
             missing.append("GOOGLE_CLOUD_PROJECT")
         if self.release == "dev":
@@ -300,6 +306,7 @@ def build_tools(settings: Settings) -> dict[str, Any]:
     guard = SqlGuard(SqlGuardConfig(allowed_aggregates=layer.aggregate_atoms()))
 
     if settings.executor_url:
+        from campaign_copilot.service.request_auth import RequestSigner
         from campaign_copilot.tools.remote_exec import RemoteSandbox, google_id_token_provider
 
         token_provider = (
@@ -310,6 +317,11 @@ def build_tools(settings: Settings) -> dict[str, Any]:
         python_exec: Any = RemoteSandbox(
             base_url=settings.executor_url,
             token_provider=token_provider,
+            signer=(
+                RequestSigner.from_base64(settings.executor_signing_private_key)
+                if settings.executor_signing_private_key
+                else None
+            ),
         )
     else:
         # In-process. Acceptable for local development only: see docs/threat-model.md.

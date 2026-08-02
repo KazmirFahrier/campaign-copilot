@@ -8,6 +8,7 @@ deployment property, which rots silently, into an assertion that fails loudly.
 
 from __future__ import annotations
 
+import base64
 import json
 import threading
 from pathlib import Path
@@ -15,6 +16,7 @@ from typing import Any
 
 import httpx
 import pytest
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi.testclient import TestClient
 
 from campaign_copilot.llm.client import ScriptedClient
@@ -28,6 +30,7 @@ from campaign_copilot.service.executor import (
 from campaign_copilot.service.executor import (
     create_app as create_executor,
 )
+from campaign_copilot.service.request_auth import RequestSigner
 from campaign_copilot.tools.base import ToolResult, ToolSpec
 from campaign_copilot.tools.python_exec import PythonSandbox, SandboxConfig
 from campaign_copilot.tools.remote_exec import RemoteSandbox
@@ -398,6 +401,33 @@ def test_the_remote_sandbox_is_indistinguishable_from_the_local_one() -> None:
     assert bad.error_code == "EXECUTION_ERROR"
     assert "ZeroDivisionError" in bad.content
     assert not bad.content.startswith("EXECUTION_ERROR: EXECUTION_ERROR")
+
+
+def test_the_executor_requires_a_fresh_api_signature_when_configured() -> None:
+    private_key = Ed25519PrivateKey.generate()
+    signer = RequestSigner(private_key)
+    public_key = base64.b64encode(private_key.public_key().public_bytes_raw()).decode()
+    executor = create_executor(
+        PythonSandbox(config=SandboxConfig(timeout_seconds=5, cpu_seconds=5)),
+        environ={"PATH": "/usr/bin", "CC_EXECUTOR_SIGNING_PUBLIC_KEY": public_key},
+    )
+    client = TestClient(executor)
+    assert client.post("/exec", json={"code": "print(1)"}).status_code == 401
+
+    remote = RemoteSandbox(base_url="http://executor", client=client, signer=signer)
+    result = remote.run(code="print(6 * 7)")
+    # macOS cannot raise RLIMIT_AS again inside this process, so execution may fail locally;
+    # a non-infrastructure result proves the signed request passed the middleware.
+    assert result.error_code != "EXECUTOR_UNAVAILABLE"
+
+    body = json.dumps(
+        {"code": "print(1)", "session_id": "default"},
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+    headers = {"Content-Type": "application/json", **signer.headers("POST", "/exec", body)}
+    assert client.post("/exec", content=body, headers=headers).status_code == 200
+    assert client.post("/exec", content=body, headers=headers).status_code == 401
 
 
 def test_an_unreachable_executor_is_infrastructure_not_a_bug_in_the_model_s_code() -> None:
