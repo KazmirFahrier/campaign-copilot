@@ -53,8 +53,10 @@ boundary sits is a deployment decision, and it must not change a line of the loo
   wrong for anything real. Production points `CC_WAREHOUSE` at BigQuery, which is a dbt profile
   change, not a rewrite.
 - **Sessions are in-process.** `SessionStore` is a bounded LRU dict, so multi-turn works on
-  **one instance** and breaks the moment Cloud Run autoscales past one. The fix is the Postgres
-  session store the memory module was designed for and does not yet have.
+  **one instance**. Terraform pins both services to one warm instance. This is an explicit
+  capacity contract, not horizontal scalability. A restart loses conversation and Python
+  namespace state. Horizontal scale requires a shared session backend before either maximum
+  instance count is raised.
 
   An earlier version of this file described exactly that limitation while the code had no
   session store at all: memory was constructed per request and discarded, so `session_id` was
@@ -69,20 +71,24 @@ boundary sits is a deployment decision, and it must not change a line of the loo
   startup and both images would have crash-looped. CI now builds the wheel, installs it where no
   checkout exists, and starts both factories.
 
-- **No authentication on `/v1/chat`.** The api is `INGRESS_TRAFFIC_ALL` with no IAM invoker
-  restriction. Do not put a key behind this without adding one.
+- **The production API is authenticated twice.** Cloud Run IAM remains private because no
+  `allUsers` invoker binding exists, and `/v1/*` also requires `CC_API_BEARER_TOKEN`. The
+  application uses constant-time comparison and fails at startup when production mode lacks
+  the token, the executor URL, its audience, or an immutable release id.
 
-- **Pinned facts are unreachable.** `ConversationMemory.pin()` exists, is tested, and has no
-  caller: the agent has no tool with which to pin one (`docs/AUDIT.md`, P1-6). Adding one
-  changes the agent's action space and needs eval cases before it changes the loop, so it is
-  open rather than patched.
+- **Pinned facts are reachable and scored.** The per-request `remember` tool is bound to the
+  current session only. The multi-turn evaluation verifies pins are written, rendered into the
+  system prompt, and preserved across compression.
 
 ## Running it locally
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
+export CC_API_BEARER_TOKEN=local-development-token
 docker compose -f deploy/docker-compose.yml up --build
-curl -N localhost:8080/v1/chat -H 'content-type: application/json' \
+curl -N localhost:8080/v1/chat \
+  -H 'content-type: application/json' \
+  -H "authorization: Bearer ${CC_API_BEARER_TOKEN}" \
   -d '{"question":"ROAS by channel last week"}'
 ```
 
@@ -96,12 +102,26 @@ encodes with a VPC connector and no NAT.
 ```bash
 gcloud auth configure-docker "${REGION}-docker.pkg.dev"
 TAG=$(git rev-parse --short HEAD)     # never `latest`: a rollback must name a build
+
+cd deploy/terraform
+terraform init
+terraform apply \
+  -target=google_artifact_registry_repository.images \
+  -target=google_secret_manager_secret.anthropic_api_key \
+  -target=google_secret_manager_secret.api_bearer_token \
+  -var project_id="${PROJECT}" -var image_tag="${TAG}"
+cd ../..
+
+printf '%s' "${ANTHROPIC_API_KEY}" | \
+  gcloud secrets versions add anthropic-api-key --data-file=-
+API_BEARER_TOKEN=$(openssl rand -hex 32)
+printf '%s' "${API_BEARER_TOKEN}" | \
+  gcloud secrets versions add api-bearer-token --data-file=-
 docker build -f deploy/Dockerfile.api      -t "${REPO}/api:${TAG}"      .
 docker build -f deploy/Dockerfile.executor -t "${REPO}/executor:${TAG}" .
 docker push "${REPO}/api:${TAG}" && docker push "${REPO}/executor:${TAG}"
 
 cd deploy/terraform
-terraform init
 terraform plan  -var project_id="${PROJECT}" -var image_tag="${TAG}"
 terraform apply -var project_id="${PROJECT}" -var image_tag="${TAG}"
 ```
@@ -112,9 +132,19 @@ token Cloud Run's invoker binding requires. Without it every `python_exec` call 
 Then, before trusting it:
 
 ```bash
-curl -f "$(terraform output -raw api_url)/readyz"     # 503 until the warehouse answers
-curl -f "$(terraform output -raw api_url)/metrics"     # ungrounded_blocked must be able to move
+API_URL=$(terraform output -raw api_url)
+IAM_TOKEN=$(gcloud auth print-identity-token --audiences="${API_URL}")
+curl -f "${API_URL}/readyz" \
+  -H "X-Serverless-Authorization: Bearer ${IAM_TOKEN}"
+curl -f "${API_URL}/metrics" \
+  -H "X-Serverless-Authorization: Bearer ${IAM_TOKEN}"
+curl -f "${API_URL}/v1/info" \
+  -H "X-Serverless-Authorization: Bearer ${IAM_TOKEN}" \
+  -H "Authorization: Bearer ${API_BEARER_TOKEN}"
 ```
 
 `ungrounded_blocked` sitting at zero forever is not good news. It means either that nobody has
 asked a hard question, or that somebody switched the grounding gate off.
+
+The operational response for each signal, the release checklist, and rollback procedure live
+in [`runbook.md`](runbook.md).

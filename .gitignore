@@ -31,5 +31,4 @@ warehouse/*.duckdb.wal
 web/node_modules/
 web/dist/
 deploy/terraform/.terraform/
-deploy/terraform/.terraform.lock.hcl
 deploy/terraform/*.tfstate*

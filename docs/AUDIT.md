@@ -899,3 +899,47 @@ Thirty-four findings. Thirty-three fixed, one open and named: spelled-out-number
 (R2-4), which remains a measured, documented bound of the grounding gate rather than a defect
 with a fix pending. The two unrun methods are unchanged — the literal container, and a live
 model behind `make eval-live`.
+
+---
+
+# Production hardening, round nine
+
+This round used the release path as the lens: what must be true before setting
+`CC_ENVIRONMENT=production`, and can the numeric provenance chain create its own evidence?
+
+## P0-11, closed. SQL literals could manufacture grounding facts
+
+`run_sql("select 412000 as spend")` passed the guard. The returned row then entered
+`ToolResult.numeric_facts()`, so an answer stating 412000 passed grounding even though the
+warehouse supplied nothing. Read-only was not enough: the query was safe to execute and unsafe
+to trust.
+
+`SqlGuard` now requires at least one allowlisted base table and rejects numeric literals in
+result projections. Numeric filters, grouping ordinals, limits, and the zero denominator in a
+governed `NULLIF` expression remain valid. Tests cover a tableless literal, a literal projected
+beside a real aggregate, and a literal added to a real aggregate.
+
+## R2-4, closed conservatively. The question and number words license nothing
+
+Numbers from the question no longer ground an answer after any query. A correct response can
+say "the requested threshold" without restating it. Recognized English number phrases are
+blocked and regenerated with digits; the checker does not attempt to interpret their value.
+This closes both known laundering paths without adding grammatical or word-to-number inference
+to the trusted base.
+
+## Production service controls
+
+Production mode now fails at startup unless bearer authentication, the executor URL and OIDC
+audience, and an immutable release id exist. The real remote sandbox receives the same identity
+provider readiness already used, fixing a split where the probe authenticated but execution did
+not. Admission control returns status 429 instead of allowing unbounded concurrent model calls.
+Every event carries the release and model. Terraform pins both services to one warm instance,
+matching the in-process session contract, and `docs/runbook.md` defines service objectives,
+triage, and rollback.
+
+## Standing count after round nine
+
+Thirty-five audit findings, thirty-five fixed. The literal container and a live model evaluation
+remain unrun environmental validations, not hidden claims of completion. Horizontal scaling is
+explicitly blocked on a shared session backend; the deployed profile is a bounded single instance
+service until that architecture changes.

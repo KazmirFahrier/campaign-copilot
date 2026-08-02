@@ -26,6 +26,8 @@ import contextvars
 import json
 import logging
 import os
+import re
+import secrets
 import threading
 import time
 import uuid
@@ -36,7 +38,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from campaign_copilot.agent.loop import Agent
@@ -55,6 +57,7 @@ from campaign_copilot.tools.sql import ListMetricsTool, QueryMetricsTool, RunSql
 __all__ = ["Metrics", "Settings", "create_app", "request_id"]
 
 request_id: contextvars.ContextVar[str] = contextvars.ContextVar("request_id", default="-")
+_REQUEST_ID = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 
 
 class _JsonFormatter(logging.Formatter):
@@ -113,6 +116,44 @@ class Settings:
         default_factory=lambda: int(os.getenv("CC_CONTEXT_WINDOW", "180000"))
     )
     max_sessions: int = field(default_factory=lambda: int(os.getenv("CC_MAX_SESSIONS", "512")))
+    environment: str = field(default_factory=lambda: os.getenv("CC_ENVIRONMENT", "development"))
+    release: str = field(default_factory=lambda: os.getenv("CC_RELEASE", "dev"))
+    api_bearer_token: str | None = field(
+        default_factory=lambda: os.getenv("CC_API_BEARER_TOKEN") or None,
+        repr=False,
+    )
+    max_concurrent_requests: int = field(
+        default_factory=lambda: int(os.getenv("CC_MAX_CONCURRENT_REQUESTS", "16"))
+    )
+
+    def __post_init__(self) -> None:
+        """Reject unsafe production configurations before traffic reaches the process."""
+        if self.max_steps < 1 or self.max_sessions < 1 or self.max_concurrent_requests < 1:
+            raise ValueError("Step, session, and concurrency limits must all be positive.")
+        if self.environment not in {"development", "test", "production"}:
+            raise ValueError(
+                "CC_ENVIRONMENT must be development, test, or production; unknown values "
+                "must not bypass production checks."
+            )
+        if self.environment != "production":
+            return
+        missing: list[str] = []
+        if not self.api_bearer_token:
+            missing.append("CC_API_BEARER_TOKEN")
+        elif len(self.api_bearer_token) < 32:
+            missing.append("CC_API_BEARER_TOKEN (at least 32 characters)")
+        if not self.executor_url:
+            missing.append("CC_EXECUTOR_URL")
+        elif not self.executor_url.startswith("https://"):
+            missing.append("CC_EXECUTOR_URL (HTTPS required)")
+        if not self.executor_audience:
+            missing.append("CC_EXECUTOR_AUDIENCE")
+        if self.release == "dev":
+            missing.append("CC_RELEASE")
+        if missing:
+            raise ValueError(
+                "Production configuration is unsafe. Set: " + ", ".join(sorted(missing))
+            )
 
 
 @dataclass
@@ -133,6 +174,8 @@ class Metrics:
     ungrounded_blocked: int = 0
     tool_failures: int = 0
     total_tokens: int = 0
+    auth_rejected: int = 0
+    overloaded: int = 0
     #: Bounded. An unbounded list is a slow leak and an increasingly expensive /metrics scrape
     #: (docs/AUDIT.md, P2-8). A thousand samples give the same percentiles.
     latency_ms: deque[float] = field(default_factory=lambda: deque(maxlen=1024))
@@ -168,6 +211,8 @@ class Metrics:
             "ungrounded_blocked": self.ungrounded_blocked,
             "tool_failures": self.tool_failures,
             "total_tokens": self.total_tokens,
+            "auth_rejected": self.auth_rejected,
+            "overloaded": self.overloaded,
             "p50_latency_ms": pct(0.50),
             "p95_latency_ms": pct(0.95),
         }
@@ -230,7 +275,7 @@ class ChatRequest(BaseModel):
     """One question."""
 
     question: str = Field(min_length=1, max_length=2000)
-    session_id: str = Field(default="default", max_length=64)
+    session_id: str = Field(default="default", pattern=r"^[A-Za-z0-9_-]{1,64}$")
 
 
 def _sse(event: dict[str, Any]) -> str:
@@ -244,9 +289,17 @@ def build_tools(settings: Settings) -> dict[str, Any]:
     guard = SqlGuard(SqlGuardConfig(allowed_aggregates=layer.aggregate_atoms()))
 
     if settings.executor_url:
-        from campaign_copilot.tools.remote_exec import RemoteSandbox
+        from campaign_copilot.tools.remote_exec import RemoteSandbox, google_id_token_provider
 
-        python_exec: Any = RemoteSandbox(base_url=settings.executor_url)
+        token_provider = (
+            google_id_token_provider(settings.executor_audience)
+            if settings.executor_audience
+            else None
+        )
+        python_exec: Any = RemoteSandbox(
+            base_url=settings.executor_url,
+            token_provider=token_provider,
+        )
     else:
         # In-process. Acceptable for local development only: see docs/threat-model.md.
         logger.warning("CC_EXECUTOR_URL unset; running python_exec in-process (not a boundary)")
@@ -271,6 +324,7 @@ def create_app(
     config = settings or Settings()
     registry = tools if tools is not None else build_tools(config)
     metrics = Metrics()
+    capacity = threading.BoundedSemaphore(config.max_concurrent_requests)
 
     def default_client() -> LLMClient:
         return AnthropicClient(model=config.model)
@@ -292,11 +346,30 @@ def create_app(
 
     @app.middleware("http")
     async def _request_context(request: Request, call_next: Any) -> Any:
-        rid = request.headers.get("X-Request-ID") or uuid.uuid4().hex[:16]
+        supplied_rid = request.headers.get("X-Request-ID", "")
+        rid = supplied_rid if _REQUEST_ID.fullmatch(supplied_rid) else uuid.uuid4().hex[:16]
         token = request_id.set(rid)
         started = time.perf_counter()
         try:
-            response = await call_next(request)
+            if request.url.path.startswith("/v1/") and config.api_bearer_token:
+                supplied = request.headers.get("Authorization", "")
+                scheme, separator, credential = supplied.partition(" ")
+                authenticated = (
+                    separator == " "
+                    and scheme.lower() == "bearer"
+                    and secrets.compare_digest(credential, config.api_bearer_token)
+                )
+                if not authenticated:
+                    metrics.record(auth_rejected=1)
+                    response = JSONResponse(
+                        {"detail": "Authentication required", "request_id": rid},
+                        status_code=401,
+                        headers={"WWW-Authenticate": "Bearer"},
+                    )
+                else:
+                    response = await call_next(request)
+            else:
+                response = await call_next(request)
         finally:
             request_id.reset(token)
         elapsed = (time.perf_counter() - started) * 1000
@@ -359,9 +432,25 @@ def create_app(
         """Counters. `ungrounded_blocked` at zero forever means the gate is off."""
         return metrics.snapshot()
 
+    @app.get("/v1/info")
+    def info() -> dict[str, str]:
+        """Immutable release identity for incident and model trace correlation."""
+        return {
+            "service": "campaign-copilot",
+            "release": config.release,
+            "model": config.model,
+        }
+
     @app.post("/v1/chat")
-    async def chat(body: ChatRequest) -> StreamingResponse:
+    async def chat(body: ChatRequest) -> Response:
         """Stream the agent's decisions as server-sent events."""
+        if not capacity.acquire(blocking=False):
+            metrics.record(overloaded=1)
+            return JSONResponse(
+                {"detail": "Service is at capacity. Retry later."},
+                status_code=429,
+                headers={"Retry-After": "2"},
+            )
         metrics.record(requests=1)
         rid = request_id.get()
         queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
@@ -371,7 +460,15 @@ def create_app(
         cancel = threading.Event()
 
         def emit(event: dict[str, Any]) -> None:
-            loop.call_soon_threadsafe(queue.put_nowait, {**event, "request_id": rid})
+            loop.call_soon_threadsafe(
+                queue.put_nowait,
+                {
+                    **event,
+                    "request_id": rid,
+                    "release": config.release,
+                    "model": config.model,
+                },
+            )
 
         def work() -> None:
             """Run the agent, streaming events, and always push the terminating sentinel.
@@ -414,10 +511,16 @@ def create_app(
                     if result.trace.grounding and not result.trace.grounding.ok:
                         metrics.record(ungrounded_blocked=1)
                 emit({"type": "done", "ok": result.ok, "answer": result.answer})
-            except Exception as err:
+            except Exception:
                 metrics.record(errors=1)
                 logger.exception("agent failed")
-                emit({"type": "error", "reason": "internal", "text": str(err)})
+                emit(
+                    {
+                        "type": "error",
+                        "reason": "internal",
+                        "text": "Internal error. Use the request id to locate the server log.",
+                    }
+                )
             finally:
                 if token is not None:
                     session_scope.reset(token)
@@ -436,7 +539,10 @@ def create_app(
                 raise
             finally:
                 cancel.set()
-                await task
+                try:
+                    await task
+                finally:
+                    capacity.release()
 
         return StreamingResponse(
             stream(),

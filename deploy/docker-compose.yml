@@ -39,6 +39,7 @@ services:
     environment:
       CC_EXECUTOR_URL: http://executor:8080
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?set ANTHROPIC_API_KEY}
+      CC_API_BEARER_TOKEN: ${CC_API_BEARER_TOKEN:?set CC_API_BEARER_TOKEN}
 
 networks:
   backend:

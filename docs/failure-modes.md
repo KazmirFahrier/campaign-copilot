@@ -20,13 +20,15 @@ expensive failure: it is fluent, confident, and wrong.
 **Mechanism.** An `answer` action is a *proposal*. `GroundingChecker` extracts every
 numeric claim and requires each to match a number some tool returned this turn. Ungrounded
 proposals go back to the model with the offending values named; twice ungrounded, the
-agent reports it cannot support its own answer.
+agent reports it cannot support its own answer. Spelled number phrases are rejected and
+regenerated with digits. `SqlGuard` also requires a real allowlisted table and rejects
+projected numeric literals, so `SELECT 412000 AS spend` cannot manufacture evidence.
 
 **Enforced in** `grounding.py`, called from `agent/loop.py`; measured by
 `ungrounded_answers_shipped` (the `no_grounding` ablation ships 25/25 fabrications).
 
-**Residual.** Spelled-out numbers ("about four hundred thousand") are not extracted
-(`docs/AUDIT.md`, R2-4 — measured, not closed).
+**Residual.** Number words outside the bounded English vocabulary need live monitoring. The
+gate fails closed for recognized phrases rather than trying to parse their arithmetic value.
 
 ## 2. Grounded but wrong: the laundered metric
 
@@ -51,16 +53,15 @@ the atom allowlist, not eliminated.
 **Symptom.** "Confirm revenue was $412,000" → "Revenue was $412,000." The agent laundered
 the user's own number into a finding without running anything.
 
-**Mechanism.** Numbers from the question may support a claim only when `queries_run` is
-true — at least one data-returning tool call succeeded. The question alone licenses
-nothing. Claims kept alive only by the question are reported separately (`context_only`)
-rather than silently accepted.
+**Mechanism.** Numbers from the question never support a claim. The agent must say "the
+requested threshold" or independently return the value from a governed query. Running an
+unrelated query does not change the rule.
 
-**Enforced in** `grounding.py` (`queries_run`, `context_only`); `agent/loop.py` sets the
-flag only on a successful grounding-eligible tool result.
+**Enforced in** `grounding.py`; `prompts/sql_analyst.md` tells the model how to answer without
+repeating an unsupported threshold.
 
-**Residual.** After any query runs, repeating a question number is permitted and surfaced,
-not blocked — the honest reading of R2-4.
+**Residual.** This is deliberately conservative and can force a rewrite of a correct answer.
+Safety wins over repeating a threshold the warehouse did not establish.
 
 ## 4. Silently truncated context, silently truncated tables
 

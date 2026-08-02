@@ -147,12 +147,20 @@ def test_a_twice_ungrounded_answer_is_refused_rather_than_shipped() -> None:
     assert "$500,000" in result.answer
 
 
-def test_numbers_from_the_question_are_grounded_by_the_question() -> None:
+def test_numbers_from_the_question_are_not_grounded_by_an_unrelated_query() -> None:
     tool = FakeTool("t", [ToolResult.success("none", rows=[])])
     agent, _ = build(
-        [tool_step("t"), plan("answer", answer="No campaign beat 2.5x ROAS.")], {"t": tool}
+        [
+            tool_step("t"),
+            plan("answer", answer="No campaign beat 2.5x ROAS."),
+            plan("answer", answer="No campaign beat the requested threshold."),
+        ],
+        {"t": tool},
     )
-    assert agent.run("which campaigns beat 2.5x ROAS?").ok
+    result = agent.run("which campaigns beat 2.5x ROAS?")
+    assert result.ok
+    assert "2.5" not in result.answer
+    assert any(step.error_code == "UNGROUNDED" for step in result.trace.steps)
 
 
 # ------------------------------------------------------- tool failure handling

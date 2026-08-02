@@ -8,17 +8,20 @@ layer, executing it in a sandbox, and refusing to state a number it cannot trace
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-> **Status: Phases 0-6 built and audited; nothing is deployed.** 230 Python tests + 7 TypeScript tests,
+> **Status: production controls built and audited; nothing is deployed.** More than 280 Python
+> tests plus 7 TypeScript tests,
 > `mypy --strict`, `tsc --strict`, `terraform validate`. The evaluation regression gate,
 > the report provenance check, the Terraform validation and the TypeScript typecheck all run
 > in CI. **No `terraform apply` has been run and there is no live URL** —
 > [`docs/deploy.md`](docs/deploy.md) states exactly what is verified and what is not. See also
 > [`EVAL_REPORT.md`](EVAL_REPORT.md), [`docs/threat-model.md`](docs/threat-model.md), and
-> [`docs/AUDIT.md`](docs/AUDIT.md) — seven rounds of self-audit, thirty-four defects: a false
+> [`docs/AUDIT.md`](docs/AUDIT.md) and the
+> [`production runbook`](docs/runbook.md). The audit found a false
 > claim in this project's own evaluation report, a regression gate that could not see the control
 > it existed to protect, an integrity check weak enough to hide a bug in the shipped report, and
-> an installed package that could not find its own configuration. Twenty-five are fixed; four are
-> open and named. The audit process itself introduced three of the defects, which is written up
+> an installed package that could not find its own configuration, and a query that could turn a
+> model supplied literal into fake grounding evidence. The findings are fixed. The audit process
+> itself introduced three defects, which is written up
 > rather than hidden. Each round used a method the previous four could not: source-reading,
 > adversarial inputs, auditing the audit, a fresh install, and real sockets.
 
@@ -176,9 +179,10 @@ GroundingReport(ok=False, ungrounded=(Claim(raw='$412,000', ...),), checked=2)
 ```
 
 `9.70` passes: a fact rounds to it at the claim's own precision. `$412,000` does not appear
-in any query result, so the answer does not ship. Three relaxations keep a correct agent from
-being blocked — rounding, percent/fraction rescaling, and numbers the user supplied — and each
-is a rule, not a fudge factor. Rescaling `3.8%` to `0.038` also buys two decimal places of
+in any query result, so the answer does not ship. Two relaxations keep a correct agent from
+being blocked: rounding and percent/fraction rescaling. Numbers supplied by the user are never
+evidence, even after an unrelated query runs. Spelled number phrases are rejected and rewritten
+with digits so prose cannot bypass extraction. Rescaling `3.8%` to `0.038` also buys two decimal places of
 precision; without that, a claim of `3.8%` would be "grounded" by a fact of `0.052`.
 
 ## Tools
@@ -349,6 +353,13 @@ event the renderer forgets to handle is a compile error rather than a blank pane
 checks the warehouse and the executor. `/metrics` exposes `ungrounded_blocked` — a counter
 stuck at zero forever means somebody switched the grounding gate off.
 
+Production mode fails closed unless bearer authentication, the isolated executor URL and
+audience, and an immutable release id are configured. Requests are admission controlled and
+return status 429 at capacity. Every SSE event carries the model and release identity. Terraform
+pins the API and executor to one warm instance because session state is local; the
+[`production runbook`](docs/runbook.md) makes that capacity boundary, the service objectives,
+and the rollback procedure explicit.
+
 ## Roadmap
 
 | Phase | Scope | Status |
@@ -360,6 +371,7 @@ stuck at zero forever means somebody switched the grounding gate off.
 | 4 | **Evaluation harness** — golden SQL, ablations, CI regression gate | ✅ done (κ study unrun) |
 | 5 | Document automation (markdown + pptx; Google adapter untested) | ✅ done |
 | 6 | Cloud Run + Terraform + TypeScript streaming UI | 🟨 built and validated; never applied |
+| 7 | Production hardening: auth, admission control, release identity, runbook, provenance bypass closure | ✅ built and tested; never applied |
 
 Phase 4 is the point of the project. Everything before it exists to make the evaluation
 meaningful, and everything after it exists to make the evaluation observable in production.

@@ -60,18 +60,13 @@ def test_small_integers_and_years_are_prose_not_claims() -> None:
     assert report.checked == 2
 
 
-def test_numbers_the_user_supplied_are_grounded_by_the_question() -> None:
-    """A 2.5x threshold licenses the agent to repeat 2.5 -- once it has actually run a query.
-
-    This test used to pass `facts=[]` with no `queries_run`, and passed. That is the
-    leading-question hole: with no query at all, the user's own number came back as an
-    assertion (docs/AUDIT.md, R2-4).
-    """
+def test_numbers_the_user_supplied_are_not_evidence() -> None:
+    """An unrelated query must not turn a leading question into a verified fact."""
     report = CHECKER.check(
         "Two campaigns beat 2.5x ROAS.", facts=[], context_numbers=[2.5], queries_run=True
     )
-    assert report.ok
-    assert [c.raw for c in report.context_only] == ["2.5"]
+    assert not report.ok
+    assert [c.raw for c in report.ungrounded] == ["2.5"]
 
 
 # ---------------------------------------------------------- the strict half
@@ -143,12 +138,12 @@ def test_a_leading_question_cannot_launder_a_number_into_an_answer() -> None:
     assert [c.raw for c in report.ungrounded] == ["$412,000"]
 
 
-def test_a_threshold_from_the_question_is_still_repeatable_once_a_query_has_run() -> None:
+def test_a_threshold_from_the_question_remains_blocked_after_a_query() -> None:
     report = CHECKER.check(
         "No campaign beat 2.5x ROAS.", facts=[], context_numbers=[2.5], queries_run=True
     )
-    assert report.ok
-    assert [c.raw for c in report.context_only] == ["2.5"]
+    assert not report.ok
+    assert [c.raw for c in report.ungrounded] == ["2.5"]
 
 
 def test_claims_grounded_by_a_query_are_not_marked_context_only() -> None:
@@ -157,3 +152,18 @@ def test_claims_grounded_by_a_query_are_not_marked_context_only() -> None:
     )
     assert report.ok
     assert report.context_only == ()
+
+
+def test_spelled_out_numbers_cannot_bypass_grounding() -> None:
+    for answer in (
+        "ROAS was nine point seven.",
+        "Spend was four hundred twelve thousand.",
+        "Revenue was one million.",
+    ):
+        report = CHECKER.check(answer, facts=[])
+        assert not report.ok, answer
+        assert report.ungrounded
+
+
+def test_small_spelled_counts_remain_prose() -> None:
+    assert CHECKER.check("The top three channels are shown.", facts=[]).ok
