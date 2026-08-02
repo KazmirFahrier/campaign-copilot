@@ -1,13 +1,17 @@
 # The API service. Holds the LLM credential. Has egress. Runs no untrusted code.
-FROM python:3.12-slim AS build
+ARG PYTHON_IMAGE=python:3.12-slim@sha256:57cd7c3a7a273101a6485ba99423ee568157882804b1124b4dd04266317710de
+FROM ${PYTHON_IMAGE} AS build
 WORKDIR /build
-COPY pyproject.toml README.md ./
+COPY pyproject.toml README.md requirements-build.lock requirements-production.lock ./
 COPY src ./src
-# `.[reporting]` alone omitted fastapi and uvicorn, so the image built and the CMD below could
-# never start (docs/AUDIT.md, R2-3). Nothing caught it, because the image was never built.
-RUN pip install --no-cache-dir --prefix=/install ".[service,reporting]"
+COPY semantic ./semantic
+COPY prompts ./prompts
+COPY evals/datasets ./evals/datasets
+RUN pip install --no-cache-dir --require-hashes -r requirements-build.lock \
+ && pip install --no-cache-dir --prefix=/install --require-hashes -r requirements-production.lock \
+ && pip install --no-cache-dir --no-build-isolation --no-deps --prefix=/install .
 
-FROM python:3.12-slim
+FROM ${PYTHON_IMAGE}
 # A distinct, unprivileged UID. Nothing in this image needs root.
 RUN useradd --uid 10001 --create-home --shell /usr/sbin/nologin api \
  && mkdir -p /app/warehouse && chown api:api /app/warehouse
@@ -16,9 +20,10 @@ COPY --from=build /install /usr/local
 # so the package resolves them from `campaign_copilot/_data/` and needs no COPY here. Before
 # that, `pip install .` produced a package that could not find its own metrics and this image
 # crash-looped on startup (docs/AUDIT.md, R4-1).
-# The warehouse is NOT baked in. It is a build artifact, gitignored, produced by `make
-# warehouse`; an earlier COPY of it made this image unbuildable from a clean checkout. Mount it,
-# or point CC_WAREHOUSE at BigQuery. /readyz returns 503 until it can answer `select 1`.
+# The deterministic demo warehouse is built before the image, then copied read only into the
+# immutable release. Production client data belongs in a managed warehouse adapter; this image
+# intentionally proves the deployed path without claiming that synthetic data is BigQuery.
+COPY --chown=api:api warehouse/campaign_copilot.duckdb /app/warehouse/campaign_copilot.duckdb
 WORKDIR /app
 USER api
 

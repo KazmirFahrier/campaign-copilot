@@ -19,6 +19,7 @@ from typing import Any, Literal, Protocol, runtime_checkable
 
 __all__ = [
     "AnthropicClient",
+    "GeminiClient",
     "LLMClient",
     "LLMResponse",
     "Message",
@@ -214,6 +215,69 @@ class AnthropicClient:
             model=self.model, messages=[{"role": "user", "content": text}]
         )
         return int(resp.input_tokens)
+
+
+class GeminiClient:
+    """Google Gemini adapter using Cloud workload identity instead of an API key."""
+
+    def __init__(
+        self,
+        model: str = "gemini-3.5-flash",
+        *,
+        project: str | None = None,
+        location: str = "global",
+    ) -> None:
+        """Create an Agent Platform client authenticated by Application Default Credentials."""
+        from google import genai
+
+        self._client = genai.Client(enterprise=True, project=project, location=location)
+        self.model = model
+
+    def complete(
+        self,
+        messages: Sequence[Message],
+        *,
+        system: str | None = None,
+        max_tokens: int = 1024,
+        temperature: float = 0.0,
+    ) -> LLMResponse:
+        """Call Gemini while preserving conversation roles and the system instruction."""
+        from google.genai import types
+
+        contents: Any = [
+            {
+                "role": "model" if message.role == "assistant" else "user",
+                "parts": [{"text": message.content}],
+            }
+            for message in messages
+            if message.role != "system"
+        ]
+        response = self._client.models.generate_content(
+            model=self.model,
+            contents=contents,
+            config=types.GenerateContentConfig(
+                system_instruction=system,
+                max_output_tokens=max_tokens,
+                temperature=temperature,
+            ),
+        )
+        usage = response.usage_metadata
+        candidates = response.candidates or []
+        finish = str(candidates[0].finish_reason) if candidates else None
+        return LLMResponse(
+            text=response.text or "",
+            model=self.model,
+            usage=Usage(
+                int(getattr(usage, "prompt_token_count", 0) or 0),
+                int(getattr(usage, "candidates_token_count", 0) or 0),
+            ),
+            stop_reason=finish,
+        )
+
+    def count_tokens(self, text: str) -> int:
+        """Use the provider counter so context limits match billed input."""
+        response = self._client.models.count_tokens(model=self.model, contents=text)
+        return int(response.total_tokens or 0)
 
 
 class OpenAIClient:

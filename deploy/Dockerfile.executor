@@ -7,15 +7,19 @@
 # The application asserts this at startup: campaign_copilot.service.executor.assert_no_secrets
 # raises and the process crash-loops if any credential is visible in its environment. A
 # misconfigured revision fails loudly rather than becoming quietly insecure.
-FROM python:3.12-slim AS build
+ARG PYTHON_IMAGE=python:3.12-slim@sha256:57cd7c3a7a273101a6485ba99423ee568157882804b1124b4dd04266317710de
+FROM ${PYTHON_IMAGE} AS build
 WORKDIR /build
-COPY pyproject.toml README.md ./
+COPY pyproject.toml README.md requirements-build.lock requirements-executor.lock ./
 COPY src ./src
-# `.` alone omitted fastapi and uvicorn: the CMD below could never start
-# (docs/AUDIT.md, R2-3). Never built, never noticed.
-RUN pip install --no-cache-dir --prefix=/install ".[service]"
+COPY semantic ./semantic
+COPY prompts ./prompts
+COPY evals/datasets ./evals/datasets
+RUN pip install --no-cache-dir --require-hashes -r requirements-build.lock \
+ && pip install --no-cache-dir --prefix=/install --require-hashes -r requirements-executor.lock \
+ && pip install --no-cache-dir --no-build-isolation --no-deps --prefix=/install .
 
-FROM python:3.12-slim
+FROM ${PYTHON_IMAGE}
 RUN useradd --uid 10002 --create-home --shell /usr/sbin/nologin executor \
  && mkdir -p /scratch && chown executor:executor /scratch
 COPY --from=build /install /usr/local

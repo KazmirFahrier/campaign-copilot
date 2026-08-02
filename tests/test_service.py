@@ -231,6 +231,22 @@ def test_a_complete_production_configuration_is_accepted() -> None:
     assert config.environment == "production"
 
 
+def test_production_disables_interactive_api_schema_routes() -> None:
+    settings = Settings(
+        warehouse_path=DB,
+        environment="production",
+        api_bearer_token="x" * 32,
+        executor_url="https://executor.example",
+        executor_audience="https://executor.example",
+        release="abc123",
+    )
+    client = TestClient(
+        create_app(settings=settings, client_factory=lambda: ScriptedClient([]), tools={})
+    )
+    assert client.get("/docs").status_code == 404
+    assert client.get("/openapi.json").status_code == 404
+
+
 def test_release_identity_is_carried_by_every_event() -> None:
     app = create_app(
         settings=Settings(warehouse_path=DB, release="abc123"),

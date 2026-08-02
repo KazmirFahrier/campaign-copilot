@@ -2,6 +2,7 @@
 
 from campaign_copilot.llm.client import (
     AnthropicClient,
+    GeminiClient,
     LLMClient,
     LLMResponse,
     Message,
@@ -29,6 +30,7 @@ __all__ = [
     "ContextBudget",
     "ContextOverflowError",
     "FitResult",
+    "GeminiClient",
     "HeuristicCounter",
     "LLMClient",
     "LLMResponse",

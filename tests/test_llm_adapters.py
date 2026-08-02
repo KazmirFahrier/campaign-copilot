@@ -21,6 +21,82 @@ import pytest
 
 from campaign_copilot.llm.client import Message
 
+# --------------------------------------------------------------------- gemini
+
+
+@pytest.fixture
+def gemini_capture() -> Iterator[dict[str, Any]]:
+    captured: dict[str, Any] = {}
+
+    class GenerateContentConfig:
+        def __init__(self, **kwargs: Any) -> None:
+            captured["config"] = kwargs
+
+    class FakeModels:
+        def generate_content(self, **kwargs: Any) -> Any:
+            captured["generate"] = kwargs
+            return types.SimpleNamespace(
+                text='{"action": "answer"}',
+                usage_metadata=types.SimpleNamespace(
+                    prompt_token_count=13, candidates_token_count=5
+                ),
+                candidates=[types.SimpleNamespace(finish_reason="STOP")],
+            )
+
+        def count_tokens(self, **kwargs: Any) -> Any:
+            captured["count"] = kwargs
+            return types.SimpleNamespace(total_tokens=17)
+
+    class FakeClient:
+        def __init__(self, **kwargs: Any) -> None:
+            captured["init"] = kwargs
+            self.models = FakeModels()
+
+    google = types.ModuleType("google")
+    google.__path__ = []  # type: ignore[attr-defined]
+    genai = types.ModuleType("google.genai")
+    genai.Client = FakeClient  # type: ignore[attr-defined]
+    genai.types = types.SimpleNamespace(GenerateContentConfig=GenerateContentConfig)  # type: ignore[attr-defined]
+    google.genai = genai  # type: ignore[attr-defined]
+    saved = {name: sys.modules.get(name) for name in ("google", "google.genai")}
+    sys.modules["google"] = google
+    sys.modules["google.genai"] = genai
+    try:
+        yield captured
+    finally:
+        for name, module in saved.items():
+            if module is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = module
+
+
+def test_gemini_adapter_uses_workload_identity_and_preserves_roles(
+    gemini_capture: dict[str, Any],
+) -> None:
+    from campaign_copilot.llm.client import GeminiClient
+
+    client = GeminiClient(model="gemini-x", project="project-x", location="global")
+    response = client.complete(
+        [Message(role="user", content="hi"), Message(role="assistant", content="hello")],
+        system="SYS",
+    )
+
+    assert gemini_capture["init"] == {
+        "enterprise": True,
+        "project": "project-x",
+        "location": "global",
+    }
+    assert [item["role"] for item in gemini_capture["generate"]["contents"]] == [
+        "user",
+        "model",
+    ]
+    assert gemini_capture["config"]["system_instruction"] == "SYS"
+    assert response.usage.input_tokens == 13
+    assert response.usage.output_tokens == 5
+    assert client.count_tokens("hello") == 17
+
+
 # ------------------------------------------------------------------ anthropic
 
 
