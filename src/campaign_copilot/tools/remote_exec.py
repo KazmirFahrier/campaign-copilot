@@ -12,12 +12,14 @@ respond to them the same way.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
 import httpx
 
+from campaign_copilot.service.request_auth import RequestSigner
 from campaign_copilot.tools.base import ToolResult, ToolSpec
 from campaign_copilot.tools.python_exec import PythonSandbox, session_scope
 
@@ -33,7 +35,7 @@ def google_id_token_provider(audience: str) -> TokenProvider:
     The Terraform sets the executor to `INGRESS_TRAFFIC_INTERNAL_ONLY` and grants the api's
     service account `roles/run.invoker`. Cloud Run enforces that binding by demanding an
     identity token on every request. An earlier version of this client sent none, so the first
-    `python_exec` call in production would have returned 403 and `/readyz` would have reported
+    `python_exec` call in production would have returned 403 and `/ready` would have reported
     the executor down forever (docs/AUDIT.md, P0-2).
 
     `terraform validate` passing said nothing about whether the two services could talk.
@@ -59,6 +61,7 @@ class RemoteSandbox:
     timeout_seconds: float = 30.0
     client: httpx.Client | None = field(default=None, repr=False)
     token_provider: TokenProvider | None = field(default=None, repr=False)
+    signer: RequestSigner | None = field(default=None, repr=False)
 
     #: Deliberately the same spec object the in-process sandbox advertises. If these ever
     #: diverge, the model is being told a different story depending on how we deployed.
@@ -69,19 +72,29 @@ class RemoteSandbox:
             self.client = httpx.Client(base_url=self.base_url, timeout=self.timeout_seconds)
         return self.client
 
-    def _headers(self) -> dict[str, str]:
+    def _headers(self, method: str, path: str, body: bytes) -> dict[str, str]:
         """Attach the identity token Cloud Run's invoker binding requires."""
-        if self.token_provider is None:
-            return {}
-        token = self.token_provider()
-        return {"Authorization": f"Bearer {token}"} if token else {}
+        headers = self.signer.headers(method, path, body) if self.signer else {}
+        if self.token_provider is not None:
+            token = self.token_provider()
+            if token:
+                headers["X-Serverless-Authorization"] = f"Bearer {token}"
+        return headers
 
     def run(self, **kwargs: Any) -> ToolResult:
         """POST the cell to the executor and translate its verdict back into a ToolResult."""
         # The session id is read from server state, never from the model's arguments.
         payload = {"code": kwargs.get("code", ""), "session_id": session_scope.get()}
+        body = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
         try:
-            response = self._http().post("/exec", json=payload, headers=self._headers())
+            response = self._http().post(
+                "/exec",
+                content=body,
+                headers={
+                    "Content-Type": "application/json",
+                    **self._headers("POST", "/exec", body),
+                },
+            )
             response.raise_for_status()
         except httpx.TimeoutException:
             return ToolResult.failure(
@@ -109,6 +122,14 @@ class RemoteSandbox:
 
     def reset(self, session_id: str = "default") -> None:
         """Drop a session's namespace in the executor."""
+        body = json.dumps(
+            {"code": "", "session_id": session_id}, separators=(",", ":"), sort_keys=True
+        ).encode()
         self._http().post(
-            "/reset", json={"code": "", "session_id": session_id}, headers=self._headers()
+            "/reset",
+            content=body,
+            headers={
+                "Content-Type": "application/json",
+                **self._headers("POST", "/reset", body),
+            },
         )

@@ -10,7 +10,7 @@ confident, well-formatted claim that nothing supports.
 | # | Severity | Finding | Status |
 |---|---|---|---|
 | 1 | **P0** | `EVAL_REPORT.md` claims an LLM judge that does not exist | fixed: clause deleted, replaced with the correction |
-| 2 | **P0** | The deployed architecture cannot work: the api never authenticates to the executor | fixed: OIDC token provider + tests |
+| 2 | **P0** | The deployed architecture cannot work: the api never authenticates to the executor | fixed: signed requests, freshness and replay tests |
 | 3 | **P0** | `session_id` gives no conversation continuity; `docs/deploy.md` overstates it | fixed: bounded LRU `SessionStore` + tests |
 | 4 | **P1** | `python_exec`'s session id is model-controlled: cross-session namespace access | fixed: session is a server-set `ContextVar`, removed from the tool schema |
 | 5 | **P1** | `preexec_fn` in a threaded process: documented deadlock hazard | fixed: rlimits applied post-`exec` in `_runner.py`; `start_new_session=True` |
@@ -65,6 +65,12 @@ the first `python_exec` call returns **403**, and `/readyz` reports the executor
 `terraform validate` passes. It validates syntax and provider schema. It says nothing about
 whether the two services can talk, and I let "validate passes" stand in for "this works" in
 `docs/deploy.md`. That table is accurate about what was checked; my *summary* of it was not.
+
+The first repair used Cloud Run OIDC. A live deployment later showed that the service edge
+returned 404 before the request reached the executor despite a valid token and an allowed
+service identity. The final control uses Ed25519 request signatures with a 60 second window and
+nonce replay rejection. The executor keeps no private material, no project role, and no outbound
+internet route.
 
 ## P0-3. `session_id` is decorative
 
@@ -929,17 +935,45 @@ to the trusted base.
 
 ## Production service controls
 
-Production mode now fails at startup unless bearer authentication, the executor URL and OIDC
-audience, and an immutable release id exist. The real remote sandbox receives the same identity
-provider readiness already used, fixing a split where the probe authenticated but execution did
-not. Admission control returns status 429 instead of allowing unbounded concurrent model calls.
-Every event carries the release and model. Terraform pins both services to one warm instance,
-matching the in-process session contract, and `docs/runbook.md` defines service objectives,
-triage, and rollback.
+Production mode now fails at startup unless bearer authentication, the executor URL, its request
+signing key, and an immutable release id exist. The real remote sandbox signs execution requests
+over their timestamp, nonce, method, path, and body digest. Admission control returns status 429
+instead of allowing unbounded concurrent model calls.
+Every event carries the release and model. Terraform caps both services at one instance while
+allowing scale to zero, matching the in-process session contract, and `docs/runbook.md` defines
+service objectives, triage, and rollback.
 
 ## Standing count after round nine
 
-Thirty-five audit findings, thirty-five fixed. The literal container and a live model evaluation
-remain unrun environmental validations, not hidden claims of completion. Horizontal scaling is
-explicitly blocked on a shared session backend; the deployed profile is a bounded single instance
-service until that architecture changes.
+At the end of round nine, thirty-five audit findings were fixed. The literal container and a live
+model evaluation were still unrun environmental validations. Round ten records what happened when
+those checks became possible. Horizontal scaling remains explicitly blocked on a shared session
+backend; the deployed profile is a bounded single instance service until that architecture changes.
+
+---
+
+# Audit, round ten: live production
+
+The method was the one earlier rounds could not perform: build both images in Cloud Build, apply
+Terraform to a real Google Cloud project, and call the resulting services through their public
+Cloud Run URLs.
+
+Two failures appeared only in the real environment:
+
+| # | Severity | Finding | Status |
+|---|---|---|---|
+| R10-1 | **P0** | Cloud Run intercepted the external `/healthz` and `/readyz` paths, so the API could not become ready | fixed: production probes use `/health` and `/ready`; verified live |
+| R10-2 | **P0** | The bearer secret contained a trailing newline, so every authenticated request failed | fixed: rotated with `printf %s`; verified as exactly 64 bytes |
+| R10-3 | **P1** | The real model had no governed way to discover warehouse date coverage and exhausted its repair budget | fixed: `list_metrics` reports coverage and `query_metrics` accepts explicit sort direction |
+| R10-4 | **P1** | The log alert plan omitted the notification rate limit required by the Monitoring API | fixed: five minute notification limit applied |
+| R10-5 | **P0** | Numeric Python stdout was visible to the model but absent from structured grounding facts | fixed: numeric stdout is promoted explicitly; signed live Python request grounds and completes |
+
+The decisive distinction is again between validation and execution. Terraform validation did not
+know that Cloud Run reserves some external paths ending in `z`. Unit tests did not know the secret
+version had a newline. The offline oracle did not reveal a real model's need for date coverage.
+Only a production request exposed each defect.
+
+The deployed profile now has two Ready services, 100 percent traffic on the latest revisions,
+authenticated API routes, signed executor requests, an uptime check, two alert policies, a
+dashboard, and email notifications. The live release and evaluation evidence are recorded in
+`docs/deploy.md`.

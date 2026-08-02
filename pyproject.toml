@@ -13,6 +13,7 @@ authors = [{ name = "Kazmir Fahrier" }]
 keywords = ["llm", "agents", "rag", "evaluation", "dbt", "duckdb", "semantic-layer"]
 
 dependencies = [
+    "cryptography>=44",
     "duckdb>=1.0",
     "sqlglot>=25.0",
     "pydantic>=2.7",
@@ -24,7 +25,18 @@ dependencies = [
 [project.optional-dependencies]
 warehouse = ["dbt-core>=1.8", "dbt-duckdb>=1.8"]
 reporting = ["python-pptx>=1.0"]
-service = ["fastapi>=0.110", "uvicorn[standard]>=0.30", "httpx>=0.27", "google-auth>=2.0"]
+service = [
+    "anthropic>=0.49,<1",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.30",
+    "httpx>=0.27",
+    "google-auth>=2.0",
+    "google-genai>=1,<2",
+]
+executor = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.30",
+]
 google = ["google-api-python-client>=2.0", "google-auth>=2.0"]
 dev = [
     "pytest>=8.0",
@@ -33,6 +45,11 @@ dev = [
     "mypy>=1.11",
     "pre-commit>=3.7",
 ]
+
+[dependency-groups]
+# Docker installs this group from a hashed export before building the project wheel with
+# build isolation disabled. That keeps both runtime and build tooling inside the reviewed lock.
+build = ["hatchling==1.27.0"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/campaign_copilot"]

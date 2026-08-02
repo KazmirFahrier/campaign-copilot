@@ -8,6 +8,7 @@ deployment property, which rots silently, into an assertion that fails loudly.
 
 from __future__ import annotations
 
+import base64
 import json
 import threading
 from pathlib import Path
@@ -15,6 +16,7 @@ from typing import Any
 
 import httpx
 import pytest
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi.testclient import TestClient
 
 from campaign_copilot.llm.client import ScriptedClient
@@ -28,11 +30,13 @@ from campaign_copilot.service.executor import (
 from campaign_copilot.service.executor import (
     create_app as create_executor,
 )
+from campaign_copilot.service.request_auth import RequestSigner
 from campaign_copilot.tools.base import ToolResult, ToolSpec
 from campaign_copilot.tools.python_exec import PythonSandbox, SandboxConfig
 from campaign_copilot.tools.remote_exec import RemoteSandbox
 
 DB = Path(__file__).resolve().parents[1] / "warehouse" / "campaign_copilot.duckdb"
+TEST_SIGNING_PRIVATE_KEY = base64.b64encode(bytes(range(32))).decode()
 
 
 def plan(action: str, **kw: Any) -> str:
@@ -78,12 +82,12 @@ def _events(response: httpx.Response) -> list[dict[str, Any]]:
 def test_liveness_touches_nothing() -> None:
     """A dependency outage must not restart the process."""
     client = _app([])
-    assert client.get("/healthz").json() == {"status": "ok"}
+    assert client.get("/health").json() == {"status": "ok"}
 
 
 @pytest.mark.skipif(not DB.exists(), reason="run `make warehouse`")
 def test_readiness_checks_the_warehouse() -> None:
-    response = _app([]).get("/readyz")
+    response = _app([]).get("/ready")
     assert response.status_code == 200
     assert response.json()["checks"]["warehouse"] == "ok"
 
@@ -95,7 +99,7 @@ def test_readiness_fails_when_the_warehouse_is_missing() -> None:
         client_factory=lambda: ScriptedClient([]),
         tools={},
     )
-    response = TestClient(app).get("/readyz")
+    response = TestClient(app).get("/ready")
     assert response.status_code == 503
     assert not response.json()["ready"]
 
@@ -104,18 +108,18 @@ def test_readiness_fails_when_the_warehouse_is_missing() -> None:
 
 
 def test_a_request_id_is_generated_and_echoed() -> None:
-    response = _app([]).get("/healthz")
+    response = _app([]).get("/health")
     assert len(response.headers["X-Request-ID"]) == 16
 
 
 def test_a_supplied_request_id_is_preserved() -> None:
-    response = _app([]).get("/healthz", headers={"X-Request-ID": "abc123"})
+    response = _app([]).get("/health", headers={"X-Request-ID": "abc123"})
     assert response.headers["X-Request-ID"] == "abc123"
 
 
 def test_an_invalid_request_id_is_replaced_before_it_reaches_logs() -> None:
     invalid = "a" * 100
-    response = _app([]).get("/healthz", headers={"X-Request-ID": invalid})
+    response = _app([]).get("/health", headers={"X-Request-ID": invalid})
     assert response.headers["X-Request-ID"] != invalid
     assert len(response.headers["X-Request-ID"]) == 16
 
@@ -226,9 +230,27 @@ def test_a_complete_production_configuration_is_accepted() -> None:
         api_bearer_token="x" * 32,
         executor_url="https://executor.example",
         executor_audience="https://executor.example",
+        executor_signing_private_key=TEST_SIGNING_PRIVATE_KEY,
         release="abc123",
     )
     assert config.environment == "production"
+
+
+def test_production_disables_interactive_api_schema_routes() -> None:
+    settings = Settings(
+        warehouse_path=DB,
+        environment="production",
+        api_bearer_token="x" * 32,
+        executor_url="https://executor.example",
+        executor_audience="https://executor.example",
+        executor_signing_private_key=TEST_SIGNING_PRIVATE_KEY,
+        release="abc123",
+    )
+    client = TestClient(
+        create_app(settings=settings, client_factory=lambda: ScriptedClient([]), tools={})
+    )
+    assert client.get("/docs").status_code == 404
+    assert client.get("/openapi.json").status_code == 404
 
 
 def test_release_identity_is_carried_by_every_event() -> None:
@@ -384,6 +406,33 @@ def test_the_remote_sandbox_is_indistinguishable_from_the_local_one() -> None:
     assert not bad.content.startswith("EXECUTION_ERROR: EXECUTION_ERROR")
 
 
+def test_the_executor_requires_a_fresh_api_signature_when_configured() -> None:
+    private_key = Ed25519PrivateKey.generate()
+    signer = RequestSigner(private_key)
+    public_key = base64.b64encode(private_key.public_key().public_bytes_raw()).decode()
+    executor = create_executor(
+        PythonSandbox(config=SandboxConfig(timeout_seconds=5, cpu_seconds=5)),
+        environ={"PATH": "/usr/bin", "CC_EXECUTOR_SIGNING_PUBLIC_KEY": public_key},
+    )
+    client = TestClient(executor)
+    assert client.post("/exec", json={"code": "print(1)"}).status_code == 401
+
+    remote = RemoteSandbox(base_url="http://executor", client=client, signer=signer)
+    result = remote.run(code="print(6 * 7)")
+    # macOS cannot raise RLIMIT_AS again inside this process, so execution may fail locally;
+    # a non-infrastructure result proves the signed request passed the middleware.
+    assert result.error_code != "EXECUTOR_UNAVAILABLE"
+
+    body = json.dumps(
+        {"code": "print(1)", "session_id": "default"},
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+    headers = {"Content-Type": "application/json", **signer.headers("POST", "/exec", body)}
+    assert client.post("/exec", content=body, headers=headers).status_code == 200
+    assert client.post("/exec", content=body, headers=headers).status_code == 401
+
+
 def test_an_unreachable_executor_is_infrastructure_not_a_bug_in_the_model_s_code() -> None:
     """Telling the agent its Python was wrong, when the network was, makes it repair nothing."""
     remote = RemoteSandbox(
@@ -504,7 +553,7 @@ def test_the_remote_sandbox_authenticates_when_a_token_provider_is_configured() 
     seen: list[str | None] = []
 
     def capture(request: httpx.Request) -> httpx.Response:
-        seen.append(request.headers.get("Authorization"))
+        seen.append(request.headers.get("X-Serverless-Authorization"))
         return httpx.Response(200, json={"ok": True, "content": "42", "data": {}})
 
     remote = RemoteSandbox(
@@ -535,7 +584,7 @@ def test_an_unauthenticated_executor_gets_no_header() -> None:
     seen: list[str | None] = []
 
     def capture(request: httpx.Request) -> httpx.Response:
-        seen.append(request.headers.get("Authorization"))
+        seen.append(request.headers.get("X-Serverless-Authorization"))
         return httpx.Response(200, json={"ok": True, "content": "42", "data": {}})
 
     remote = RemoteSandbox(
@@ -643,7 +692,7 @@ def test_metrics_expose_a_cancelled_counter() -> None:
 def test_readiness_reports_the_executor_when_one_is_configured() -> None:
     """docs/AUDIT.md, R5-2, verified over real HTTP and pinned here.
 
-    /readyz must fail closed when a configured dependency is down; /healthz must not, or a
+    /ready must fail closed when a configured dependency is down; /health must not, or a
     dependency outage restarts the process instead of draining the revision.
     """
     app = create_app(
@@ -652,10 +701,10 @@ def test_readiness_reports_the_executor_when_one_is_configured() -> None:
         tools={},
     )
     client = TestClient(app)
-    body = client.get("/readyz").json()
+    body = client.get("/ready").json()
     assert body["ready"] is False
     assert "executor" in body["checks"]
-    assert client.get("/healthz").status_code == 200
+    assert client.get("/health").status_code == 200
 
 
 def test_question_numbers_are_blocked_even_after_a_query() -> None:

@@ -8,8 +8,8 @@ carries those events, and the last one carries the answer.
 
 Operational shape:
 
-* `/healthz` is liveness: the process is up. It touches nothing.
-* `/readyz` is readiness: the warehouse answers and the executor answers. Cloud Run must not
+* `/health` is liveness: the process is up. It touches nothing.
+* `/ready` is readiness: the warehouse answers and the executor answers. Cloud Run must not
   route traffic to a revision whose dependencies are down, and conflating the two probes is
   how a bad revision takes an outage with it.
 * Every request carries an `X-Request-ID`, generated if absent, echoed on the response, bound
@@ -44,7 +44,7 @@ from pydantic import BaseModel, Field
 from campaign_copilot.agent.loop import Agent
 from campaign_copilot.grounding import GroundingChecker
 from campaign_copilot.guardrails.sql_guard import SqlGuard, SqlGuardConfig
-from campaign_copilot.llm.client import AnthropicClient, LLMClient
+from campaign_copilot.llm.client import AnthropicClient, GeminiClient, LLMClient, OpenAIClient
 from campaign_copilot.llm.tokens import ContextBudget
 from campaign_copilot.memory import ConversationMemory
 from campaign_copilot.rag import HybridRetriever, build_corpus
@@ -110,7 +110,14 @@ class Settings:
     executor_audience: str | None = field(
         default_factory=lambda: os.getenv("CC_EXECUTOR_AUDIENCE") or None
     )
+    llm_provider: str = field(default_factory=lambda: os.getenv("CC_LLM_PROVIDER", "anthropic"))
     model: str = field(default_factory=lambda: os.getenv("CC_MODEL", "claude-sonnet-4-5"))
+    google_cloud_project: str | None = field(
+        default_factory=lambda: os.getenv("GOOGLE_CLOUD_PROJECT") or None
+    )
+    google_cloud_location: str = field(
+        default_factory=lambda: os.getenv("GOOGLE_CLOUD_LOCATION", "global")
+    )
     max_steps: int = field(default_factory=lambda: int(os.getenv("CC_MAX_STEPS", "8")))
     context_window: int = field(
         default_factory=lambda: int(os.getenv("CC_CONTEXT_WINDOW", "180000"))
@@ -120,6 +127,10 @@ class Settings:
     release: str = field(default_factory=lambda: os.getenv("CC_RELEASE", "dev"))
     api_bearer_token: str | None = field(
         default_factory=lambda: os.getenv("CC_API_BEARER_TOKEN") or None,
+        repr=False,
+    )
+    executor_signing_private_key: str | None = field(
+        default_factory=lambda: os.getenv("CC_EXECUTOR_SIGNING_PRIVATE_KEY") or None,
         repr=False,
     )
     max_concurrent_requests: int = field(
@@ -135,6 +146,8 @@ class Settings:
                 "CC_ENVIRONMENT must be development, test, or production; unknown values "
                 "must not bypass production checks."
             )
+        if self.llm_provider not in {"anthropic", "gemini", "openai"}:
+            raise ValueError("CC_LLM_PROVIDER must be anthropic, gemini, or openai.")
         if self.environment != "production":
             return
         missing: list[str] = []
@@ -148,6 +161,10 @@ class Settings:
             missing.append("CC_EXECUTOR_URL (HTTPS required)")
         if not self.executor_audience:
             missing.append("CC_EXECUTOR_AUDIENCE")
+        if not self.executor_signing_private_key:
+            missing.append("CC_EXECUTOR_SIGNING_PRIVATE_KEY")
+        if self.llm_provider == "gemini" and not self.google_cloud_project:
+            missing.append("GOOGLE_CLOUD_PROJECT")
         if self.release == "dev":
             missing.append("CC_RELEASE")
         if missing:
@@ -289,6 +306,7 @@ def build_tools(settings: Settings) -> dict[str, Any]:
     guard = SqlGuard(SqlGuardConfig(allowed_aggregates=layer.aggregate_atoms()))
 
     if settings.executor_url:
+        from campaign_copilot.service.request_auth import RequestSigner
         from campaign_copilot.tools.remote_exec import RemoteSandbox, google_id_token_provider
 
         token_provider = (
@@ -299,6 +317,11 @@ def build_tools(settings: Settings) -> dict[str, Any]:
         python_exec: Any = RemoteSandbox(
             base_url=settings.executor_url,
             token_provider=token_provider,
+            signer=(
+                RequestSigner.from_base64(settings.executor_signing_private_key)
+                if settings.executor_signing_private_key
+                else None
+            ),
         )
     else:
         # In-process. Acceptable for local development only: see docs/threat-model.md.
@@ -306,7 +329,7 @@ def build_tools(settings: Settings) -> dict[str, Any]:
         python_exec = PythonSandbox(config=SandboxConfig())
 
     return {
-        "list_metrics": ListMetricsTool(layer=layer),
+        "list_metrics": ListMetricsTool(layer=layer, warehouse=warehouse),
         "query_metrics": QueryMetricsTool(layer=layer, warehouse=warehouse),
         "run_sql": RunSqlTool(guard=guard, warehouse=warehouse),
         "search_docs": SearchDocsTool(HybridRetriever.build(build_corpus(layer))),
@@ -327,6 +350,14 @@ def create_app(
     capacity = threading.BoundedSemaphore(config.max_concurrent_requests)
 
     def default_client() -> LLMClient:
+        if config.llm_provider == "gemini":
+            return GeminiClient(
+                model=config.model,
+                project=config.google_cloud_project,
+                location=config.google_cloud_location,
+            )
+        if config.llm_provider == "openai":
+            return OpenAIClient(model=config.model)
         return AnthropicClient(model=config.model)
 
     make_client = client_factory or default_client
@@ -339,7 +370,14 @@ def create_app(
 
     sessions = SessionStore(new_memory, max_sessions=config.max_sessions)
 
-    app = FastAPI(title="campaign-copilot", version="0.1.0")
+    production = config.environment == "production"
+    app = FastAPI(
+        title="campaign-copilot",
+        version="0.1.0",
+        docs_url=None if production else "/docs",
+        redoc_url=None if production else "/redoc",
+        openapi_url=None if production else "/openapi.json",
+    )
     app.state.metrics = metrics
     app.state.settings = config
     app.state.sessions = sessions
@@ -386,13 +424,15 @@ def create_app(
         )
         return response
 
-    @app.get("/healthz")
-    def healthz() -> dict[str, str]:
+    @app.get("/health")
+    @app.get("/healthz", include_in_schema=False)
+    def health() -> dict[str, str]:
         """Liveness. Touches nothing: a dependency outage must not restart the process."""
         return {"status": "ok"}
 
-    @app.get("/readyz")
-    def readyz() -> JSONResponse:
+    @app.get("/ready")
+    @app.get("/readyz", include_in_schema=False)
+    def ready() -> JSONResponse:
         """Readiness. The warehouse must answer; the executor, if configured, must answer."""
         checks: dict[str, str] = {}
         try:
@@ -413,9 +453,9 @@ def create_app(
 
                     token = google_id_token_provider(config.executor_audience)()
                     if token:
-                        headers["Authorization"] = f"Bearer {token}"
+                        headers["X-Serverless-Authorization"] = f"Bearer {token}"
                 response = httpx.get(
-                    f"{config.executor_url}/healthz", timeout=2.0, headers=headers
+                    f"{config.executor_url}/health", timeout=2.0, headers=headers
                 )
                 response.raise_for_status()
                 checks["executor"] = "ok"
@@ -438,6 +478,7 @@ def create_app(
         return {
             "service": "campaign-copilot",
             "release": config.release,
+            "provider": config.llm_provider,
             "model": config.model,
         }
 
@@ -466,6 +507,7 @@ def create_app(
                     **event,
                     "request_id": rid,
                     "release": config.release,
+                    "provider": config.llm_provider,
                     "model": config.model,
                 },
             )

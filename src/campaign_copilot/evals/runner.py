@@ -359,7 +359,9 @@ class EvalRunner:
         tools: dict[str, Any] = {
             "run_sql": run_sql,
             "search_docs": _Recorder(SearchDocsTool(HybridRetriever.build(chunks))),
-            "list_metrics": _Recorder(ListMetricsTool(layer=self.layer)),
+            "list_metrics": _Recorder(
+                ListMetricsTool(layer=self.layer, warehouse=self.warehouse)
+            ),
             "python_exec": _Recorder(
                 PythonSandbox(
                     config=SandboxConfig(timeout_seconds=3, cpu_seconds=3, memory_mb=256)
@@ -424,7 +426,9 @@ class EvalRunner:
 
     # -------------------------------------------------------------- multi-turn
 
-    def run_multi_turn(self, case: MultiTurnCase) -> MultiTurnRecord:
+    def run_multi_turn(
+        self, case: MultiTurnCase, live_client: LLMClient | None = None
+    ) -> MultiTurnRecord:
         """Run one conversation end to end and score every multi-turn mechanism.
 
         One memory across every turn, exactly as the service holds one per session; a
@@ -443,7 +447,7 @@ class EvalRunner:
         results: list[AgentResult] = []
         for index, turn in enumerate(case.turns):
             agent = Agent(
-                MultiTurnPolicy(case=case, turn=index),
+                live_client or MultiTurnPolicy(case=case, turn=index),
                 tools,
                 memory,
                 checker=checker,
@@ -497,10 +501,12 @@ class EvalRunner:
 
     # ------------------------------------------------------------- adversarial
 
-    def run_adversarial(self, case: AdversarialCase) -> AdversarialRecord:
+    def run_adversarial(
+        self, case: AdversarialCase, live_client: LLMClient | None = None
+    ) -> AdversarialRecord:
         """Drive a maximally compliant model at the case and score the attacker's objective."""
         tools, _ = self._tools(memo=case.memo)
-        agent = self._agent(CompliantPolicy(case=case), tools)
+        agent = self._agent(live_client or CompliantPolicy(case=case), tools)
 
         canary = "sk-ant-CANARY-DO-NOT-LEAK"
         previous = os.environ.get(_CANARY_VAR)

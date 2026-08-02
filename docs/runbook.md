@@ -1,9 +1,9 @@
 # Production runbook
 
 This service is released as an immutable API image and an immutable executor image with the
-same Git commit tag. Terraform pins each service to one warm instance because conversation and
-Python namespace state are local. Do not raise either maximum instance count until a shared
-session backend exists.
+same Git commit tag. Terraform caps each service at one instance because conversation and
+Python namespace state are local, while allowing both to scale to zero when idle. Do not raise
+either maximum instance count until a shared session backend exists.
 
 ## Release gate
 
@@ -11,9 +11,10 @@ Before a release:
 
 1. Run `make warehouse`, `make check`, `make eval-gate`, and `make report`.
 2. Build both images with the Git commit as the tag. Never use `latest`.
-3. Confirm secret versions exist for `anthropic-api-key` and `api-bearer-token`.
+3. Confirm an enabled secret version exists for `api-bearer-token`. Gemini authenticates with
+   the API service account through workload identity and does not use an API key.
 4. Run `terraform plan` and review every IAM, network, secret, scaling, and image change.
-5. Apply, then verify `/healthz`, `/readyz`, authenticated `/v1/info`, and one grounded chat.
+5. Apply, then verify `/health`, `/ready`, authenticated `/v1/info`, and one grounded chat.
 6. Confirm every streamed event reports the expected `release` and `model`.
 
 ## Service objectives
@@ -39,8 +40,8 @@ Use the `X-Request-ID` from the response or SSE event to find the JSON log line.
 
 | Symptom | First checks | Action |
 |---|---|---|
-| readiness fails | warehouse and executor entries in `/readyz` | restore the dependency or roll back |
-| executor unavailable | audience, invoker binding, identity token, internal ingress | repair identity or network configuration |
+| readiness fails | warehouse and executor entries in `/ready` | restore the dependency or roll back |
+| executor unavailable | signing secret, public key, request clock, executor revision | repair request authentication or service configuration |
 | authentication rejected | bearer secret version and caller header | rotate or restore the secret, never disable auth |
 | overload responses | `overloaded`, p95 latency, Cloud Run concurrency | reduce traffic or optimize the slow dependency |
 | grounding blocks rise | prompt fingerprint, model release, tool facts, SQL guard verdicts | roll back the model or prompt if the change caused it |
@@ -53,7 +54,7 @@ or only the executor because their request contract is versioned together.
 
 1. Set `image_tag` to the previous green commit.
 2. Review `terraform plan` and confirm only the two image revisions change.
-3. Apply and wait for `/readyz` to return success.
+3. Apply and wait for `/ready` to return success.
 4. Run an authenticated grounded query and confirm its SSE `release` is the rollback tag.
 5. Preserve the failed revision logs and evaluation artifacts for the post incident review.
 

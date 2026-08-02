@@ -54,9 +54,10 @@ are built by dbt from source, in CI.
 
 **This is not a security boundary. Say it out loud.**
 
-The child process runs as the same UID, on the same kernel, with the same filesystem,
-as the agent. It can read `/proc/self/environ`. If the agent process holds an
-`ANTHROPIC_API_KEY`, so does anything that executes here.
+In local development the child process runs as the same UID, on the same kernel, with the
+same filesystem as the agent. It can read `/proc/self/environ`. That is why local execution
+is explicitly treated as unsafe even though the deployed API uses workload identity rather
+than an API key.
 
 What the module actually buys:
 
@@ -74,28 +75,33 @@ What it does **not** buy: any of the above against someone who knows the code ex
 `importlib.reload(socket)` restores the socket module in one line. The rebinding stops
 the reflex, not the adversary.
 
-**The real boundary is the container, and as of Phase 6 it exists.** `python_exec` now runs in
-a separate `executor` service (`deploy/Dockerfile.executor`, `deploy/terraform/main.tf`) with:
+**The real boundary is the deployed service.** `python_exec` runs in a separate `executor`
+service (`deploy/Dockerfile.executor`, `deploy/terraform/main.tf`) with:
 
-- a distinct, unprivileged UID (10002) and a dropped capability set;
+- a distinct, unprivileged UID (10002);
 - **no egress** — Cloud Run VPC access routed through a subnet with no Cloud NAT, and
   `internal: true` in compose. The socket rebinding inside the sandbox is now redundant rather
   than load-bearing, which is where a defence-in-depth control belongs;
-- `INGRESS_TRAFFIC_INTERNAL_ONLY`, so the public internet cannot POST arbitrary Python;
-- a read-only rootfs with one writable scratch tmpfs;
-- **no credentials of any kind**, and a service account with no IAM role bindings;
+- a routable Cloud Run endpoint whose `/exec` and `/reset` routes require a fresh Ed25519
+  signature from the API. The signature binds the timestamp, nonce, method, path, and body
+  digest; stale, modified, unsigned, and replayed requests are rejected. Only the API can read
+  the private key from Secret Manager, while the executor receives the public key only;
+- no mounted application secret or warehouse and an isolated scratch filesystem. Cloud Run's
+  platform filesystem is ephemeral, not read only, so the design does not claim otherwise;
+- a dedicated service identity with no IAM role bindings. Cloud Run still exposes platform
+  identity metadata, so the precise claim is no useful project authorization, not no identity;
 - `assert_no_secrets()` at startup, which crash-loops the process if a credential is ever
   visible in its environment. Infrastructure rots. An assertion does not. Tested:
   `test_the_executor_refuses_to_start_if_it_can_see_a_credential`.
 
-Arbitrary code execution inside the executor now buys an attacker a container with nothing in
-it. The seam is invisible to the agent: `RemoteSandbox.spec is PythonSandbox.spec`, and both
-return the same `ToolResult`.
+Arbitrary code execution inside the executor buys an attacker an ephemeral container with no
+application data, no application secret, no internet route, and no project role. The seam is
+invisible to the agent: `RemoteSandbox.spec is PythonSandbox.spec`, and both return the same
+`ToolResult`.
 
-Caveat, stated plainly: **none of this has been applied.** The Terraform passes `validate`
-against the real provider schema; the images have never been built. See `docs/deploy.md`. In
-the in-process configuration used for local development, every word of the paragraphs above is
-false, which is why the api logs a warning on startup when `CC_EXECUTOR_URL` is unset.
+Deployment evidence and its exact release are recorded in `docs/deploy.md`. In the in-process
+configuration used for local development, none of the service isolation applies, which is why
+the api logs a warning on startup when `CC_EXECUTOR_URL` is unset.
 
 ### The answer: `grounding.py`
 
@@ -108,7 +114,10 @@ Relaxations, each a rule rather than a fudge:
 - **Rounding** at the claim's own stated precision (9.70 is grounded by 9.7013).
 - **Scale**, so "3.8%" is grounded by 0.038 — *and the precision rescales with it*, or
   a 3.8% claim would be grounded by a fact of 0.052.
-- **Context**: numbers the user supplied are grounded by the question.
+- **Question numbers are never evidence.** A leading question cannot launder a supplied value
+  into a grounded answer. The model must query it independently or omit it.
+- **Written number phrases are blocked.** Phrases such as "nine point seven" cannot bypass the
+  digit extractor and must be regenerated after a supporting query.
 
 Small integers (0–12) and years (1990–2100) are treated as prose. This is a real hole:
 an agent could state "we ran 7 campaigns" without checking. Closing it requires
@@ -146,13 +155,13 @@ It exists to *flag*, so the chunk is visible in `AgentTrace` and countable by th
 harness. It never removes a chunk: deleting the attack hides it from the trace. Nothing in
 this system gates on the scanner's verdict.
 
-**Known gap.** Warehouse *values* are not yet treated as untrusted. A campaign literally
-named `ignore prior instructions` arrives inside a `TOOL RESULT` block from `query_metrics`,
-which is not wrapped, because query results are trusted by provenance. The fix is to wrap
-string cells from any column whose values are user-supplied. Not done. Named here rather
-than left for someone to find.
+Warehouse string values are fenced as untrusted data before the model sees the rendered table.
+Tag characters inside a value are JSON escaped, so a campaign named
+`</untrusted_warehouse_string>` cannot close its own fence. The structured row payload remains
+unchanged for grounding and evaluation. Tested by
+`test_warehouse_strings_are_fenced_and_cannot_close_their_fence`.
 
-The honest summary: layers 1, 3, 4 and 5 are built and tested. Layer 2's containment is a
-container that does not exist yet. Injection is now controlled at four points rather than
-zero, and the residual risk is a persuaded model choosing badly among tools it is *allowed*
-to call -- which is what the adversarial eval suite in Phase 4 is for.
+The honest residual risk is a persuaded model choosing badly among tools it is allowed to call.
+Structured steps, the registry, SQL policy, numerical grounding, untrusted document fencing,
+and untrusted warehouse string fencing reduce that risk but cannot prove the model ignored every
+hostile instruction. The adversarial evaluation measures the resulting behavior.
