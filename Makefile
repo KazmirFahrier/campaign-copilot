@@ -40,9 +40,9 @@ infra:                    ## Format-check and validate the Terraform
 
 lock:                     ## Refresh the cross-platform lock and hashed Docker inputs
 	uv lock
-	uv export --frozen --no-dev --extra reporting --extra service --no-emit-project --format requirements-txt --output-file requirements-production.lock
-	uv export --frozen --no-dev --extra executor --no-emit-project --format requirements-txt --output-file requirements-executor.lock
-	uv export --frozen --only-group build --no-emit-project --format requirements-txt --output-file requirements-build.lock
+	uv export --frozen --no-header --no-dev --extra reporting --extra service --no-emit-project --format requirements-txt --output-file requirements-production.lock
+	uv export --frozen --no-header --no-dev --extra executor --no-emit-project --format requirements-txt --output-file requirements-executor.lock
+	uv export --frozen --no-header --only-group build --no-emit-project --format requirements-txt --output-file requirements-build.lock
 
 audit:                    ## Fail on known vulnerabilities in the production dependency set
 	uvx pip-audit --strict --requirement requirements-production.lock

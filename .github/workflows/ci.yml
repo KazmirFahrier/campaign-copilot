@@ -22,9 +22,9 @@ jobs:
       - name: Locked production dependencies are current
         run: |
           uv lock --check
-          uv export --frozen --no-dev --extra reporting --extra service --no-emit-project --format requirements-txt --output-file /tmp/requirements-production.lock
-          uv export --frozen --no-dev --extra executor --no-emit-project --format requirements-txt --output-file /tmp/requirements-executor.lock
-          uv export --frozen --only-group build --no-emit-project --format requirements-txt --output-file /tmp/requirements-build.lock
+          uv export --frozen --no-header --no-dev --extra reporting --extra service --no-emit-project --format requirements-txt --output-file /tmp/requirements-production.lock
+          uv export --frozen --no-header --no-dev --extra executor --no-emit-project --format requirements-txt --output-file /tmp/requirements-executor.lock
+          uv export --frozen --no-header --only-group build --no-emit-project --format requirements-txt --output-file /tmp/requirements-build.lock
           cmp requirements-production.lock /tmp/requirements-production.lock
           cmp requirements-executor.lock /tmp/requirements-executor.lock
           cmp requirements-build.lock /tmp/requirements-build.lock
