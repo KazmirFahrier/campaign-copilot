@@ -49,7 +49,7 @@ dev = [
 [dependency-groups]
 # Docker installs this group from a hashed export before building the project wheel with
 # build isolation disabled. That keeps both runtime and build tooling inside the reviewed lock.
-build = ["hatchling==1.27.0"]
+build = ["hatchling==1.32.0"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/campaign_copilot"]
